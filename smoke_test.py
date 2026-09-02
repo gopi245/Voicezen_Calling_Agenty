@@ -343,6 +343,35 @@ async def test_llm() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_client_profiles() -> None:
+    """Every client on disk must be complete and loadable.
+
+    onboard.py writes a stub with TODO markers. This check is what stops that
+    stub reaching a caller: an unfinished client fails the deploy gate rather
+    than answering the phone with placeholder text.
+    """
+    print("\n[6] client profiles")
+    import clients
+
+    ids = clients.available()
+    check(bool(ids), "at least one client profile exists", ", ".join(ids))
+
+    for cid in ids:
+        try:
+            p = clients.load(cid)
+        except Exception as e:
+            check(False, f"{cid}: loads", f"{type(e).__name__}: {str(e)[:70]}")
+            continue
+
+        unfinished = "TODO" in p.greeting or "TODO" in p.instructions
+        check(not unfinished, f"{cid}: profile is finished (no TODO markers)",
+              "still a stub from onboard.py" if unfinished else "")
+        check(len(p.greeting) > 20, f"{cid}: has a greeting", f"{len(p.greeting)} chars")
+        check(len(p.instructions) > 500, f"{cid}: has a real prompt",
+              f"{len(p.instructions)} chars")
+        check(hasattr(p.tools, "__mro__"), f"{cid}: exposes a Tools class")
+
+
 def test_dashboard_reporting() -> None:
     """The reporting path is only exercised at hang-up, so a broken endpoint
     or secret would otherwise surface as silently missing dashboard rows."""
@@ -396,6 +425,7 @@ async def main() -> None:
     try:
         await test_tts()
         await test_llm()
+        test_client_profiles()
         test_dashboard_reporting()
     finally:
         await hc._close_http_ctx()
