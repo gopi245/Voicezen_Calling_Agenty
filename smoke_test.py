@@ -25,7 +25,7 @@ load_dotenv()
 from livekit.agents import ChatContext, utils  # noqa: E402
 
 import agent  # noqa: E402
-import gundusoodi  # noqa: E402
+from clients import load as load_client  # noqa: E402
 import stack  # noqa: E402
 
 failures: list[str] = []
@@ -123,7 +123,7 @@ async def test_tts() -> None:
     frames = 0
     duration = 0.0
     try:
-        stream = tts.synthesize(gundusoodi.GREETING)
+        stream = tts.synthesize(load_client(None).greeting)
         async for ev in stream:
             if ttfb is None:
                 ttfb = time.time() - t0
@@ -273,7 +273,7 @@ CASES = [
 
 async def test_llm() -> None:
     print("\n[4] script adherence")
-    a = agent.GundusoodiAgent()
+    a = agent.build_client_agent(load_client(None))
     llm = stack.build_llm()
     tools = list(a.tools)
 

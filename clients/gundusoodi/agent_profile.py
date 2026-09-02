@@ -19,9 +19,17 @@ from pathlib import Path
 
 from livekit.agents import RunContext, function_tool
 
-logger = logging.getLogger("gundusoodi")
+logger = logging.getLogger("clients.gundusoodi")
 
 CAPTURE_FILE = Path(__file__).parent / "captured.jsonl"
+
+# Per-client overrides. Anything not set here falls back to .env,
+# so a client only declares what actually differs.
+CONFIG = {
+    "language": "te-IN",
+    "tts_voice": "07bc462a-c644-49f1-baf7-82d5599131be",  # Sindhu
+    "llm_max_tokens": 400,
+}
 
 
 def _capture(kind: str, session=None, **fields) -> None:
@@ -596,7 +604,7 @@ it — do not make them repeat it.
 """
 
 
-class GundusoodiTools:
+class Tools:
     """Business tools for the గుండుసూది bot."""
 
     @function_tool()

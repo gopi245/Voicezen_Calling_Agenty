@@ -13,7 +13,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY agent.py stack.py gundusoodi.py voicezen.py smoke_test.py stt_test.py ./
+COPY agent.py stack.py voicezen.py smoke_test.py stt_test.py ./
+COPY clients/ ./clients/
 
 # Unbuffered so `docker logs` shows the call timeline live rather than in
 # 8KB chunks -- this is the only way to watch a call in progress.

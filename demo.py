@@ -18,7 +18,7 @@ load_dotenv()
 from livekit.agents import ChatContext, utils  # noqa: E402
 
 import agent  # noqa: E402
-import gundusoodi  # noqa: E402
+from clients import load as load_client  # noqa: E402
 import stack  # noqa: E402
 
 # Each scenario is a title plus the caller's turns in order.
@@ -127,7 +127,7 @@ async def run_scenario(llm, a, tools, title: str, turns: list[str], out: list[st
 
 
 async def main() -> None:
-    a = agent.GundusoodiAgent()
+    a = agent.build_client_agent(load_client(None))
     llm = stack.build_llm()
     tools = list(a.tools)
 
@@ -138,7 +138,7 @@ async def main() -> None:
     out.append("GUNDUSOODI VOICE BOT -- FULL SCENARIO DEMO")
     out.append(f"model: {a.__class__.__name__} via production stack\n")
     out.append("GREETING (spoken on every inbound call):")
-    out.append(f"BOT   : {gundusoodi.GREETING}\n")
+    out.append(f"BOT   : {load_client(None).greeting}\n")
 
     try:
         for title, turns in SCENARIOS:

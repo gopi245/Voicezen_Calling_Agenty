@@ -29,10 +29,8 @@ from livekit.agents import (
     function_tool,
     metrics,
 )
+import clients
 import voicezen
-from gundusoodi import GREETING as GUNDUSOODI_GREETING
-from gundusoodi import INSTRUCTIONS as GUNDUSOODI_INSTRUCTIONS
-from gundusoodi import GundusoodiTools
 from stack import build_llm, build_realtime, build_stt, build_tts
 
 load_dotenv()
@@ -126,11 +124,18 @@ class CallAgent(Agent):
         return f"transferred to {phone_number}"
 
 
-class GundusoodiAgent(GundusoodiTools, CallAgent):
-    """Telugu magazine-subscription bot. Script and tools live in gundusoodi.py."""
+def build_client_agent(profile: clients.ClientProfile) -> CallAgent:
+    """Build the agent for one client.
 
-    def __init__(self) -> None:
-        super().__init__(GUNDUSOODI_INSTRUCTIONS, base_style=False)
+    The client's Tools mixin is combined with CallAgent at call time, so a new
+    customer is a folder under clients/ -- this function never changes.
+    base_style is off because a client profile supplies its own complete voice
+    rules; the generic fifteen-word limit would truncate scripted answers.
+    """
+    agent_cls = type(
+        f"{profile.client_id.title()}Agent", (profile.tools, CallAgent), {}
+    )
+    return agent_cls(profile.instructions, base_style=False)
 
 
 class InboundAgent(CallAgent):
@@ -436,10 +441,18 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_report_call)
 
-    if os.getenv("AGENT_PROFILE", "generic") == "gundusoodi":
-        agent = GundusoodiAgent()
-    elif dial_to:
+    # Which customer this call belongs to comes from the dispatch rule, so a
+    # new client is a folder plus a rule -- never a change here. The env var
+    # remains as a single-client override for local testing.
+    client_id = metadata.get("client") or os.getenv("AGENT_PROFILE") or None
+    profile: clients.ClientProfile | None = None
+
+    if dial_to and not client_id:
         agent = OutboundAgent(metadata.get("task", ""))
+    elif client_id and client_id != "generic":
+        profile = clients.load(client_id)
+        agent = build_client_agent(profile)
+        logger.info("serving client %r", profile.client_id)
     else:
         agent = InboundAgent()
 
@@ -466,7 +479,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if dial_to:
         await _place_outbound_call(ctx, session, dial_to)
     else:
-        if os.getenv("AGENT_PROFILE", "generic") == "gundusoodi":
+        if profile is not None:
             # The greeting is scripted verbatim (node 1), so say it directly
             # rather than asking the model to produce a greeting -- that is
             # one less chance to paraphrase a fixed line, and it skips an LLM
@@ -482,7 +495,7 @@ async def entrypoint(ctx: JobContext) -> None:
             # awaitable SpeechHandle. Wrapping it in create_task raises
             # "a coroutine was expected" and kills the job, which the caller
             # hears as an answered call with dead silence.
-            speaking = session.say(GUNDUSOODI_GREETING, allow_interruptions=False)
+            speaking = session.say(profile.greeting, allow_interruptions=False)
             session.userdata["sip_participant"] = await ctx.wait_for_participant()
             await speaking
         else:
