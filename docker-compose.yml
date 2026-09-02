@@ -1,0 +1,66 @@
+# Deliberately self-contained so this project can be removed from a shared VPS
+# without touching anything else on it (Dograh, n8n).
+#
+# Isolation guarantees:
+#   * `name:` pins the compose project, so `docker compose down` here can never
+#     match another stack's containers.
+#   * Its own bridge network -- it neither joins nor can reach an existing one.
+#   * No published ports, so nothing on the host is bound and no existing
+#     service can be shadowed. The agent dials OUT to LiveKit; nothing dials in.
+#   * No host bind mounts except the capture file, which lives inside the
+#     project directory.
+#   * No host networking, no privileged mode, no docker socket.
+#
+# To remove completely:  ./uninstall.sh
+name: gundusoodi
+
+services:
+  voice-agent:
+    build: .
+    image: gundusoodi-agent:latest
+    container_name: gundusoodi-agent
+    restart: unless-stopped
+    env_file: .env
+
+    networks:
+      - gundusoodi
+
+    # Captured orders/complaints land on the host inside this project folder,
+    # so deleting the folder removes all of its data too.
+    volumes:
+      - ./captured.jsonl:/app/captured.jsonl
+
+    # Sized against a 16GB box already running Dograh and n8n. The worker is
+    # I/O-bound -- STT/LLM/TTS are all cloud APIs and no local model loads --
+    # so this cap exists to protect the neighbours, not because it needs it.
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+    healthcheck:
+      # The worker serves health on 8081 INSIDE the container once registered.
+      # Not published, so it cannot clash with n8n or anything else.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request;urllib.request.urlopen('http://127.0.0.1:8081/')
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+networks:
+  gundusoodi:
+    name: gundusoodi_net
+    driver: bridge

@@ -1,0 +1,10 @@
+livekit-agents[silero,turn-detector]~=1.0
+livekit-plugins-sarvam
+livekit-plugins-cartesia
+livekit-plugins-google
+livekit-plugins-groq
+livekit-plugins-deepgram
+livekit-plugins-noise-cancellation
+livekit-api
+python-dotenv
+httpx

@@ -1,0 +1,10 @@
+.git
+__pycache__/
+*.pyc
+.venv/
+venv/
+vobiz_openapi.json
+captured.jsonl
+README.md
+# .env is NOT ignored -- compose reads it via env_file at runtime, but it is
+# never COPYed into the image (see Dockerfile), so secrets stay out of layers.

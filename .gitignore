@@ -1,0 +1,29 @@
+# ---- secrets: never commit ----
+.env
+selfhost_keys.txt
+# Self-hosted LiveKit experiment (torn down). These embed API keys and SIP
+# credentials in plaintext; kept locally as a recipe, never published.
+livekit.yaml
+sip.yaml
+docker-compose.selfhost.yml
+provision_self.py
+
+# ---- customer data (PII): never commit ----
+# Real callers' names, addresses and phone numbers captured on live calls.
+captured.jsonl
+unsent_calls.jsonl
+quota.log
+QUOTA_ALERT.txt
+
+# ---- generated / scratch ----
+demo_output.txt
+oldprint_out.txt
+llm_test.txt
+dbg_out.txt
+vobiz_openapi.json
+
+# ---- python ----
+__pycache__/
+*.pyc
+.venv/
+venv/
