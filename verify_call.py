@@ -7,11 +7,16 @@ agent's number.
 
 import json
 import os
+import sys
 
 from dotenv import load_dotenv
 
 load_dotenv()
 import httpx  # noqa: E402
+
+# A Windows console is cp1252 and cannot print Telugu; without this the
+# script crashes before reporting anything useful.
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 # Credentials come from .env (gitignored) so this file can be committed.
 REF = os.getenv("VOICEZEN_PROJECT_REF", "sewpzeymsccrehnjvmib")
