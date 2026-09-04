@@ -190,7 +190,19 @@ def prewarm(proc) -> None:
     # hearing anything.
     proc.userdata["stt"] = build_stt()
     proc.userdata["llm"] = build_llm()
-    proc.userdata["tts"] = build_tts()
+    tts = build_tts()
+    proc.userdata["tts"] = tts
+
+    # Sarvam's TTS plugin opens a fresh WebSocket per utterance (not once per
+    # call), which measured ~1.7-2s on the greeting -- part of why the caller
+    # hears nothing for several seconds after the call connects. The plugin
+    # has its own connection pool with a prewarm() method built for exactly
+    # this; without calling it, that pool sits empty until the first real
+    # utterance pays to fill it. Guarded with hasattr since not every TTS
+    # provider's plugin exposes this (e.g. Cartesia's does not).
+    if hasattr(tts, "prewarm"):
+        tts.prewarm()
+
     logger.info("worker process prewarmed")
 
 
