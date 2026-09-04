@@ -579,22 +579,31 @@ class CallSession:
         turns = [m for m in self.messages if m["role"] != "system"]
         transcript = "\n".join(f"[{m['role']}] {m['content']}" for m in turns)
         summary = None
+        caller_name = None
         if transcript.strip():
             try:
-                summary = await asyncio.to_thread(
+                raw = await asyncio.to_thread(
                     llm_reply,
                     [
                         {"role": "system", "content": (
-                            "Summarise this phone call for a business dashboard, "
-                            "in English, in at most four sentences. State what "
-                            "the caller wanted, any details they gave (name, "
-                            "address, phone, plan), and the outcome. If they "
-                            "placed an order or made a complaint, say so "
-                            "explicitly."
+                            "Read this phone call transcript. Reply with exactly "
+                            "two lines, nothing else:\n"
+                            "Line 1: the caller's name if they stated one, "
+                            "otherwise the literal word none\n"
+                            "Line 2: a summary for a business dashboard, in "
+                            "English, at most four sentences -- what the caller "
+                            "wanted, any details they gave (address, phone, "
+                            "plan), and the outcome. If they placed an order or "
+                            "made a complaint, say so explicitly."
                         )},
                         {"role": "user", "content": transcript[:12000]},
                     ],
                 )
+                first_line, _, rest = raw.partition("\n")
+                first_line = first_line.strip()
+                if first_line and first_line.lower() != "none":
+                    caller_name = first_line
+                summary = rest.strip() or raw
             except Exception:
                 log.exception("call summary failed -- reporting without one")
         try:
@@ -602,6 +611,7 @@ class CallSession:
                 dialed_number=self._to_number,
                 call_duration_seconds=duration,
                 caller_number=self._from_number,
+                caller_name=caller_name,
                 transcript=transcript or None,
                 call_summary=summary,
                 call_status="completed",

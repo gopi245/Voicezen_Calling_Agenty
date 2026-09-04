@@ -113,6 +113,7 @@ def report_call(
     dialed_number: str,
     call_duration_seconds: float,
     caller_number: str | None = None,
+    caller_name: str | None = None,
     transcript: str | None = None,
     call_summary: str | None = None,
     call_status: str = "completed",
@@ -126,6 +127,7 @@ def report_call(
         # minutes here would under-bill by a factor of sixty.
         "call_duration": int(round(max(call_duration_seconds, 0))),
         "caller_number": caller_number,
+        "caller_name": caller_name,
         "transcript": transcript,
         "call_summary": call_summary,
         "call_status": call_status,
