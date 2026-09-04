@@ -135,15 +135,28 @@ pending_call_info: dict[str, dict] = {}
 
 @app.post("/answer")
 async def answer(request: Request):
-    """Vobiz POSTs CallUUID/From/To here for an inbound call. We must
-    respond with XML inside ~1-2s or the caller hears dead air."""
+    """Vobiz POSTs CallUUID/From/To here once a call connects -- for both
+    directions, since an outbound call answers through this same route.
+    We must respond with XML inside ~1-2s or the caller hears dead air.
+
+    `direction` comes from a query param /dial appends to its own
+    answer_url, not from anything Vobiz sends -- Vobiz's From/To fields
+    don't say which side placed the call, they're just "originator" and
+    "destination" either way. Without this, an outbound call's `to` (the
+    person WE called) would get used to resolve which client the call
+    belongs to and to load a script -- both wrong, since that number
+    identifies the callee, not the account placing the call.
+    """
     form = await request.form()
     call_uuid = form.get("CallUUID")
-    log.info("answer: call=%s from=%s to=%s", call_uuid, form.get("From"), form.get("To"))
+    direction = request.query_params.get("direction", "inbound")
+    log.info("answer: call=%s from=%s to=%s direction=%s",
+              call_uuid, form.get("From"), form.get("To"), direction)
     if call_uuid:
         pending_call_info[call_uuid] = {
             "from": form.get("From"),
             "to": form.get("To"),
+            "direction": direction,
         }
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -186,7 +199,9 @@ async def dial(request: Request):
     payload = {
         "from": DIAL_FROM_NUMBER,
         "to": to,
-        "answer_url": f"{base}/answer",
+        # The ?direction=outbound query param is how /answer tells this call
+        # apart from a real inbound one -- see the comment there.
+        "answer_url": f"{base}/answer?direction=outbound",
         "answer_method": "POST",
         "hangup_url": f"{base}/hangup",
         "hangup_method": "POST",
@@ -419,8 +434,29 @@ class CallSession:
         self._call_uuid = None
         self._from_number: str | None = None
         self._to_number: str | None = None
+        self._direction = "inbound"
         self._started_at: float | None = None
         self._done = asyncio.Event()
+
+    @property
+    def _client_number(self) -> str | None:
+        """Whichever number identifies the client this call belongs to --
+        the callee for an inbound call (self._to_number), but the CALLER
+        for an outbound one, since self._to_number there is just whoever we
+        dialed, not any client's registered number. Used for both which
+        script to load and which customer to report the call under.
+
+        Normalized to E.164 (+ prefix) because Vobiz is inconsistent about
+        this in its own webhooks -- an inbound call's `to` arrived as
+        "+918065353946", but an outbound call's `from` on the exact same
+        number arrived as "918065353946" with no plus. Both
+        clients_registry.py and the dashboard's customer lookup key off the
+        + form, so a missing plus silently fails to match either one.
+        """
+        raw = self._from_number if self._direction == "outbound" else self._to_number
+        if raw and not raw.startswith("+"):
+            raw = "+" + raw
+        return raw
 
     async def start(self):
         self._started_at = time.time()
@@ -431,9 +467,11 @@ class CallSession:
         if info:
             self._from_number = info.get("from")
             self._to_number = info.get("to")
+            self._direction = info.get("direction", "inbound")
 
-        self.client, greeting, instructions = load_client_script(self._to_number)
-        log.info("serving client '%s' (dialed %s)", self.client["client_id"], self._to_number)
+        self.client, greeting, instructions = load_client_script(self._client_number)
+        log.info("serving client '%s' (%s call, identified by %s)",
+                  self.client["client_id"], self._direction, self._client_number)
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
         await self.stt.connect()
@@ -573,7 +611,7 @@ class CallSession:
         """Send the finished call to the VoiceZen Dashboard. Runs after
         everything else has torn down, matching voicezen.py's own stated
         design: nothing here can affect a call that has already ended."""
-        if self._started_at is None or not self._to_number:
+        if self._started_at is None or not self._client_number:
             return  # never reached start() -- nothing real to report
         duration = time.time() - self._started_at
         turns = [m for m in self.messages if m["role"] != "system"]
@@ -607,10 +645,15 @@ class CallSession:
             except Exception:
                 log.exception("call summary failed -- reporting without one")
         try:
+            # dialed_number identifies which CLIENT this belongs to (see
+            # _client_number). caller_number is purely "who was the other
+            # party" for display -- the callee for an outbound call, the
+            # caller for an inbound one -- so it flips the opposite way.
+            other_party = self._to_number if self._direction == "outbound" else self._from_number
             await voicezen.report_call_async(
-                dialed_number=self._to_number,
+                dialed_number=self._client_number,
                 call_duration_seconds=duration,
-                caller_number=self._from_number,
+                caller_number=other_party,
                 caller_name=caller_name,
                 transcript=transcript or None,
                 call_summary=summary,
