@@ -1,6 +1,8 @@
 livekit-agents[silero,turn-detector]~=1.0
 livekit-plugins-sarvam
 livekit-plugins-cartesia
+# Not on PyPI yet -- installed straight from the vendor's GitHub repo.
+git+https://github.com/raya-voice-ai/livekit-plugins-raya.git
 livekit-plugins-google
 livekit-plugins-groq
 livekit-plugins-deepgram

@@ -3,8 +3,10 @@
 FROM python:3.13-slim
 
 # Audio plugins link against libstdc++ and need CA certs for the provider APIs.
+# git is only for requirements.txt's livekit-plugins-raya line -- it isn't on
+# PyPI yet, pip installs it straight from GitHub at build time.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

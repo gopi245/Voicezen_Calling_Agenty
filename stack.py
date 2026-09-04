@@ -201,6 +201,23 @@ def build_tts():
 
 
 def _build_primary_tts():
+    if os.getenv("TTS_PROVIDER", "sarvam") == "raya":
+        from livekit.plugins import raya
+
+        # All five Telugu voices on the account are "standard" model, not
+        # "m1" -- passing m1 with a standard voice_id 404s ("unknown
+        # voice_id"). Tanvi chosen by ear against the other four from a
+        # sample of the real greeting text.
+        return raya.TTS(
+            language=os.getenv("RAYA_LANGUAGE", "te"),
+            model=os.getenv("RAYA_MODEL", "standard"),
+            sample_rate=int(os.getenv("RAYA_SAMPLE_RATE", "24000")),
+            voice_id=os.getenv(
+                "RAYA_VOICE_ID",
+                "25a7c7d9-57b3-488a-a880-33edf6642902",  # Tanvi
+            ),
+        )
+
     if os.getenv("TTS_PROVIDER", "sarvam") == "cartesia":
         from livekit.plugins import cartesia
 
