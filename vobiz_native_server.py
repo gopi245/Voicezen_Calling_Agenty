@@ -175,7 +175,14 @@ async def dial(request: Request):
     if not to:
         return {"error": "missing 'to'"}, 400
 
-    base = str(request.base_url).rstrip("/")
+    # request.base_url reflects what uvicorn itself saw, not what the caller
+    # actually reached -- Caddy terminates TLS in front of this container and
+    # uvicorn isn't told (no --proxy-headers), so this always comes back
+    # http:// even when the real request was https://. Vobiz rejects an
+    # http answer_url outright ("answer_url parameter is not valid"), so
+    # this derives the public base from PUBLIC_WSS_URL (wss://.../media)
+    # instead of trusting the request at all.
+    base = PUBLIC_WSS_URL.replace("wss://", "https://").rsplit("/media", 1)[0]
     payload = {
         "from": DIAL_FROM_NUMBER,
         "to": to,
