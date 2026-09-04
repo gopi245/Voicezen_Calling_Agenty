@@ -6,11 +6,20 @@ this is the operational companion — onboarding, breakages, and routine checks.
 Every troubleshooting entry below is a real failure that happened during this
 project, with the symptom as it appeared from the outside.
 
+> **Architecture note (2026-09-04):** Gundusoodi's live traffic runs on
+> `vobiz-native` (`/opt/rumik-agent/vobiz-native`) — no LiveKit, calls talk
+> directly to Vobiz's webhook + WebSocket audio API. The original LiveKit
+> setup (`gundusoodi-agent`, `onboard.py`, `clients/`) still exists on the
+> VPS but is dormant: no number points at its trunk, so it receives no real
+> calls. It's left running as a rollback path (see below), not deleted.
+> Everything in this runbook now describes `vobiz-native` unless said
+> otherwise.
+
 ---
 
 ## Onboard a new client
 
-**Time:** ~30 minutes for steps 1–4. Step 5 is the real work.
+**Time:** ~30 minutes for steps 1–5. Step 6 is the real work.
 
 ### 1. Collect from the client
 
@@ -24,11 +33,23 @@ project, with the symptom as it appeared from the outside.
 > Gundusoodi's prompt is ~23,000 characters and took many rounds of real calls
 > to get right. Budget for the script, not for the setup.
 
-### 2. Buy a Vobiz number
+### 2. Set up their Vobiz side
 
-[console.vobiz.ai](https://console.vobiz.ai) → buy a number in their region.
-**One number per client** — the number is how a call is routed to the right
-script.
+Either a number on the shared account, or (recommended for real clients) a
+**separate Vobiz account per client** — own billing, own concurrency limit,
+isolated from everyone else's call volume. See `MULTI_CLIENT_ONBOARDING.md`
+for the full account-setup steps.
+
+Either way, end up with:
+- A phone number
+- A Vobiz **Application** (not a SIP trunk) whose `answer_url` /
+  `hangup_url` point at `https://vobiz-native.185-199-52-73.sslip.io/answer`
+  and `/hangup` — the same shared server every client uses
+- The number assigned to that Application:
+  ```
+  POST /Account/{auth_id}/numbers/{number}/application
+       {"application_id": "..."}
+  ```
 
 ### 3. Create their customer record
 
@@ -36,150 +57,156 @@ Either they sign up at `app.voicezentech.com` (the `handle_new_user` trigger
 creates their `customers` row automatically, `status='pending'`), or create it
 yourself. **Note the `customers.id`.**
 
-### 4. Wire it up
+### 4. Write their script
 
-```bash
-python onboard.py acme --number +91XXXXXXXXXX --customer-id 5 \
-                       --agent-name "Acme Clinic Reception"
+A new file next to `script_gundusoodi.py`, same shape: `GREETING` and
+`INSTRUCTIONS` as module-level strings. Use `script_gundusoodi.py` as the
+worked example.
+
+### 5. Register them
+
+Add one entry to `clients_registry.py`, keyed by their dialed number:
+
+```python
+"+91XXXXXXXXXX": {
+    "client_id": "acme",
+    "customer_id": 5,
+    "prompt_module": "script_acme",
+    "vobiz_auth_id": "...",     # their account's credentials if separate,
+    "vobiz_auth_token": "...",  # or the shared ones if not
+},
 ```
 
-Checks everything first, shows the plan, waits for confirmation, then creates:
-Vobiz number assignment, LiveKit inbound + outbound trunks, the dispatch rule
-carrying the client metadata, and the `customer_integrations` row.
-
-```bash
-python onboard.py acme --status      # what exists so far
-python onboard.py acme --rollback    # undo a half-finished run
-```
-
-### 5. Write their profile
-
-`onboard.py` leaves a stub at `clients/acme/agent_profile.py` full of `TODO`
-markers. Replace them with the real script and tools. Use
-`clients/gundusoodi/agent_profile.py` as the worked example.
-
-**The smoke test fails while `TODO` markers remain**, so an unfinished client
-cannot reach a caller by accident. That is deliberate.
+No new deployment, no restart of anything else — the registry is read at
+call time.
 
 ### 6. Test, then deploy
 
 ```bash
-python smoke_test.py                       # must pass
-docker compose up -d --force-recreate      # on the VPS
+docker compose build      # on the VPS, in /opt/rumik-agent/vobiz-native
+docker compose up -d --force-recreate
 ```
 
-Then call their number and listen.
+Then call their number and listen. Check the logs for
+`serving client 'acme' (dialed +91XXXXXXXXXX)` to confirm resolution picked
+the right one, not the Gundusoodi fallback.
 
 ---
 
 ## Remove a client
 
-```bash
-python onboard.py acme --rollback     # trunks, dispatch rule, database row
-rm -rf clients/acme                   # the script, only if you mean it
+Detach their number from the Application (or release it, if you're done with
+it entirely):
+
+```
+DELETE /Account/{auth_id}/numbers/{number}/application
 ```
 
-Rollback only touches resources `onboard.py` recorded creating — it will never
-remove something set up by hand.
+Then delete their entry from `clients_registry.py` and their script file.
+Nothing else needs touching — the shared server keeps running for everyone
+else.
 
 ---
 
 ## Troubleshooting
 
-### Caller hears an engaged tone
+### Caller hears an engaged tone or "number switched off"
 
-**Usually:** no worker was registered when the call arrived.
-
-Deploys take 30–60 seconds because the worker prewarms provider clients before
-registering. A call during that window is never answered — LiveKit holds the
-SIP call unanswered until an agent is ready, so the carrier gives up.
-
-```bash
-docker compose logs | grep "registered worker"     # must be recent
-docker ps --filter name=gundusoodi-agent
-```
-
-**Also possible:** Vobiz concurrency. The account cap is shared across *all*
-clients — the 4th simultaneous caller is refused by the carrier before the
-call ever reaches us.
+**First, check whether the call ever reached Vobiz at all:**
 
 ```bash
 curl -s -H "X-Auth-ID: $VOBIZ_AUTH_ID" -H "X-Auth-Token: $VOBIZ_AUTH_TOKEN" \
-  https://api.vobiz.ai/api/v1/Account/$VOBIZ_AUTH_ID/concurrency
+  "https://api.vobiz.ai/api/v1/Account/$VOBIZ_AUTH_ID/cdr/recent?limit=3"
 ```
 
-### Call connects, then silence
+**If there's no CDR entry for the attempt at all** — the call never reached
+Vobiz's system. This is upstream of everything on the VPS: the caller's own
+carrier, not our infrastructure. Retry after a few minutes (carriers
+sometimes cache a stale "unreachable" result); try a different phone/SIM to
+isolate it.
 
-**Usually:** TTS credits ran out. This is the most common outage.
-
-The bot answers, listens and thinks correctly — it just cannot speak. Cartesia
-returns `402 Insufficient credits`; short utterances may still succeed while
-longer ones fail, so it can look intermittent.
+**If the CDR shows the call but no answer**, or a `trunk_id` populated
+instead of routing through the Application — the number's routing may have
+reverted or not fully propagated:
 
 ```bash
-python smoke_test.py | grep greeting     # "greeting synthesises" fails
+curl -s -H "X-Auth-ID: $VOBIZ_AUTH_ID" -H "X-Auth-Token: $VOBIZ_AUTH_TOKEN" \
+  https://api.vobiz.ai/api/v1/Account/$VOBIZ_AUTH_ID/numbers | \
+  python3 -c "import sys,json; [print(n['e164'], n.get('trunk_group_id'), n.get('application_id')) for n in json.load(sys.stdin)['items']]"
 ```
 
-Fix: top up, or switch `TTS_PROVIDER` in `.env` and restart. Sarvam and
-Cartesia both speak Telugu.
+Exactly one of `trunk_group_id` / `application_id` should be set, and it
+should be `application_id` for anything on `vobiz-native`. Re-run the
+detach/attach from step 2 above if it's wrong.
 
-**Also possible:** the job crashed at startup. A config value out of range
-raises inside the job, not at boot, so the worker looks healthy while every
-call dies.
+**Also check the server itself is up:**
 
 ```bash
-docker compose logs | grep -i "traceback\|unhandled"
+docker ps --filter name=vobiz-native
+docker logs --tail 30 vobiz-native
 ```
 
-`smoke_test.py` exists to catch exactly this before a caller does.
+### Call connects, then silence, or the bot never replies to a question
+
+**Check `llm_completion_tokens` in the call's usage summary** — if it's `0`
+after the greeting, the LLM was never invoked for the caller's turn even
+though STT heard them. This has happened; no confirmed root cause yet, watch
+for a repeat.
+
+**Also possible: TTS credits ran out** (Raya or Sarvam). The bot answers,
+listens correctly, and just can't speak.
+
+```bash
+docker logs --since 30m vobiz-native | grep -iE "error|402|insufficient"
+```
+
+**Also possible: the container crashed on startup** — a bad `voice_id` for
+the configured `model` (Raya's Telugu voices are all `standard`, not `m1`;
+passing the wrong one 404s) or a missing env var raises inside a call, not at
+boot.
+
+```bash
+docker logs --since 1h vobiz-native | grep -iE "traceback|error|exception"
+```
 
 ### Bot hears nonsense, or repeats a question
 
 **Usually:** speech recognition, not the prompt.
 
-Check the transcript before changing anything:
-
 ```bash
-docker compose logs | grep TRANSCRIPT
+docker logs vobiz-native | grep "caller:"
 ```
 
 If the caller's words are garbled in the log, the model is answering garbage
-correctly and the prompt is not at fault. Measured: Telugu recognition is ~92%
-through the phone codec but drops to ~67% with line noise. Krisp
-`BVCTelephony` is what closes most of that gap — confirm it is active:
+correctly and the prompt is not at fault. `STT_PROMPT` in `server.py` biases
+recognition toward domain vocabulary — extend it per-client if a second
+client's brand name gets consistently misheard the way "గుండుసూది" did.
+
+### Replies feel slow, or the call takes a while to "lift" after ringing
 
 ```bash
-docker compose logs | grep "noise cancellation"
+docker logs vobiz-native | grep -E "TTS metrics|answer:|hangup:"
 ```
 
-### Replies feel slow
+Two separate things bundle into this complaint:
 
-Read the per-turn metrics rather than guessing:
-
-```bash
-docker compose logs | grep -E "EOU metrics|LLM metrics|TTS metrics"
-```
-
-Healthy on this deployment: `end_of_utterance_delay` ~0.07–0.45s, `llm ttft`
-~0.3–1.0s, `tts ttfb` ~0.12s.
-
-> **The usual culprit is not latency at all — it is reply length.** A 33-token
-> answer becomes ~8 seconds of speech the caller must sit through. Time to
-> first word is ~1.3s; everything after that is the bot talking. Shortening
-> answers helps more than any model change.
-
-An endpointing delay set too low is the other classic: 0.07s split one spoken
-question into three turns, so the agent kept discarding and restarting.
+- **Ring-to-answer delay** (Vobiz→our server handoff) — measured ~5-7s on a
+  healthy call. This is carrier/platform signaling before our code even
+  runs; not fixable from here.
+- **Reply length** — the actual dominant cost once the call is live. A long
+  scripted answer is several seconds of audio the caller must sit through.
+  Shortening answers helps more than any latency tuning.
 
 ### Calls work but do not appear in the dashboard
 
 ```bash
-docker compose logs | grep -E "call logged|not logged"
-cat unsent_calls.jsonl        # queued for retry
+docker logs vobiz-native | grep -E "call logged|call report failed|queued for retry"
 ```
 
-Reporting happens after hang-up and never affects the caller. Failures queue
-locally and retry on the next successful send.
+Reporting happens after hang-up (`voicezen.py`'s `report_call_async`, reused
+unchanged from the LiveKit agent — no LiveKit dependency in that module) and
+never affects the caller. Failures queue locally in `unsent_calls.jsonl` and
+retry on the next successful send.
 
 ### Payment fails with "not registered"
 
@@ -205,61 +232,70 @@ curl -s https://app.voicezentech.com/assets/index-*.js | grep -o 'https://[a-z]*
 
 ## Routine checks
 
-### LiveKit quota
-
-Runs daily at 09:00 on the VPS. Writes `QUOTA_ALERT.txt` at 90%.
-
-```bash
-cat /opt/gundusoodi/QUOTA_ALERT.txt    # exists only if triggered
-python usage.py                        # check on demand
-```
-
-Free tier is 1,000 agent-minutes/month. **Every call is billed rounded up to a
-whole minute**, so short calls cost a full minute each.
-
 ### Provider credits
 
-There is no alerting on these — they fail mid-call, as Cartesia did.
+There is no alerting on these — they fail mid-call.
 
-- **Cartesia** — 1 credit per character, ~1,100 per call
+- **Raya (TTS)** — check balance via their dashboard
 - **Sarvam** — ₹30 per 10,000 characters (TTS), ₹30/hour (STT)
-- **Vobiz** — check the balance; calls stop when it empties
+- **Gemini** — pay-as-you-go, no prepaid balance to run out of
+- **Vobiz** — check the balance; calls stop when it empties, per-account if
+  clients are on separate Vobiz accounts
 
 ### Before any restart
 
 ```bash
-python smoke_test.py
+docker logs vobiz-native --tail 50   # nothing already broken before you touch it
 ```
 
-It gates the deploy for a reason: a bad config value surfaces as a caller
-hearing silence, not as an error you would notice.
+There's no `smoke_test.py` equivalent for `vobiz-native` yet — worth building
+once there's more than one client, so a bad script doesn't reach a caller
+before anyone notices.
 
 ---
 
 ## Useful commands
 
 ```bash
-# on the VPS, in /opt/gundusoodi
+# on the VPS, in /opt/rumik-agent/vobiz-native
 docker compose logs -f                      # live
-docker compose logs | grep TRANSCRIPT       # what was said
+docker logs vobiz-native | grep "caller:\|bot:"   # what was said
 docker compose ps                           # health
-python verify_call.py                       # newest call vs the carrier's CDR
 
-# locally
-python demo.py                              # every scenario, no phone call
-python smoke_test.py                        # the deploy gate
-python onboard.py <client> --status
+# Vobiz CDR for a specific number
+curl -s -H "X-Auth-ID: $VOBIZ_AUTH_ID" -H "X-Auth-Token: $VOBIZ_AUTH_TOKEN" \
+  "https://api.vobiz.ai/api/v1/Account/$VOBIZ_AUTH_ID/cdr/recent?limit=5"
 ```
 
 ---
 
 ## Things that are deliberate, not bugs
 
-- **The greeting cannot be interrupted.** Line noise used to cut it in half.
 - **The agent re-asks a field at most once**, then accepts whatever it heard.
   Looping is worse than an imperfect value — the read-back catches mistakes,
   nothing catches a caller who hung up.
 - **`call_duration` is stored in seconds**, and billed `ceil(seconds / 60)`.
 - **No TTS fallback.** Chaining two engines forced sample-rate resampling that
-  degraded every call. The LLM fallback stays, because there the alternative
-  is silence.
+  degraded every call in the LiveKit version; the same reasoning applies here.
+- **Client resolution falls back to Gundusoodi** if a dialed number isn't in
+  `clients_registry.py`, rather than failing the call — an unregistered
+  number answering with the wrong-but-known script is safer than dead air.
+
+---
+
+## The LiveKit path (dormant, not deleted)
+
+`gundusoodi-agent`, `onboard.py`, `clients/`, and the Vobiz SIP trunk still
+exist and still work — they just have no number pointed at them right now.
+To roll back to LiveKit for a given number:
+
+```
+DELETE /Account/{auth_id}/numbers/{number}/application
+POST   /Account/{auth_id}/numbers/{number}/assign
+       {"trunk_group_id": "8a94fdf6-a2d1-46cf-9181-39757020b94f"}
+```
+
+Everything in the original version of this runbook (LiveKit quota checks,
+`smoke_test.py`, `onboard.py --status/--rollback`) still applies to that
+path — see git history for the pre-2026-09-04 version of this file if it's
+ever brought back into active use.
