@@ -292,7 +292,10 @@ async def dial(request: Request):
             # handed back -- /answer's own webhook arrives with the same
             # UUID as CallUUID and merges into this same dict entry.
             request_uuid = data.get("request_uuid")
-            if r.status == 200 and campaign and request_uuid:
+            # Vobiz returns 201 ("call queued") for a successful dial, not
+            # 200 -- checking only for 200 silently dropped the campaign
+            # context on every real call, since it never matched.
+            if 200 <= r.status < 300 and campaign and request_uuid:
                 pending_call_info[request_uuid] = {"campaign": campaign}
             return data
 
