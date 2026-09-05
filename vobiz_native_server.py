@@ -655,6 +655,7 @@ class CallSession:
                 call_duration_seconds=duration,
                 caller_number=other_party,
                 caller_name=caller_name,
+                call_type=self._direction,
                 transcript=transcript or None,
                 call_summary=summary,
                 call_status="completed",
