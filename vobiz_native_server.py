@@ -233,11 +233,69 @@ async def answer(request: Request):
     return PlainTextResponse(xml, media_type="application/xml")
 
 
+async def _report_unanswered_campaign_call(campaign: dict, cause: str | None) -> None:
+    """A campaign call that never gets answered never reaches
+    CallSession.start() -- that only fires once the /media WebSocket opens,
+    which only happens if the callee actually picks up. Without this, such
+    a contact would stay stuck on 'dialing' forever, since nothing else
+    ever reports it. Reported the same way _report_campaign_call() does,
+    just with a fixed no_answer outcome and no transcript to summarize."""
+    if not CAMPAIGN_OUTCOME_URL or not VOICE_AGENT_SECRET:
+        log.error("campaign call never answered but CAMPAIGN_OUTCOME_URL/secret "
+                  "not configured -- outcome for contact %s is lost",
+                  campaign.get("contact_id"))
+        return
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                CAMPAIGN_OUTCOME_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-agent-secret": VOICE_AGENT_SECRET,
+                    "apikey": VOICEZEN_ANON_KEY,
+                    "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                },
+                json={
+                    "campaign_id": campaign.get("campaign_id"),
+                    "contact_id": campaign.get("contact_id"),
+                    "customer_id": campaign.get("customer_id"),
+                    "call_duration": 0,
+                    "call_status": "completed",
+                    "outcome": "no_answer",
+                    "transcript": None,
+                    "call_summary": f"Not answered (cause: {cause or 'unknown'})",
+                    "language": campaign.get("language"),
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                if r.status != 200:
+                    log.error("campaign-outcome report (no_answer) failed: HTTP %s %s",
+                              r.status, await r.text())
+                else:
+                    log.info("campaign call never answered: campaign=%s contact=%s cause=%s",
+                              campaign.get("campaign_id"), campaign.get("contact_id"), cause)
+    except Exception:
+        log.exception("campaign-outcome (no_answer) request failed")
+
+
 @app.post("/hangup")
 async def hangup(request: Request):
     form = await request.form()
+    call_uuid = form.get("CallUUID")
+    cause = form.get("HangupCause")
     log.info("hangup: call=%s duration=%s cause=%s",
-             form.get("CallUUID"), form.get("Duration"), form.get("HangupCause"))
+             call_uuid, form.get("Duration"), cause)
+
+    # If this call's stashed info is still here, no CallSession ever claimed
+    # it (that only happens once /media's "start" event fires), meaning the
+    # callee never answered. A CallSession that WAS created already popped
+    # and reported this itself via _report(), so this only fires for the
+    # never-answered case.
+    info = pending_call_info.pop(call_uuid, None) if call_uuid else None
+    campaign = info.get("campaign") if info else None
+    if campaign:
+        await _report_unanswered_campaign_call(campaign, cause)
+
     return PlainTextResponse("OK")
 
 
