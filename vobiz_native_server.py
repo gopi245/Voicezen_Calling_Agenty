@@ -39,7 +39,7 @@ import aiohttp
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -73,6 +73,24 @@ VOBIZ_API = "https://api.vobiz.ai/api/v1"
 # Caller ID for outbound calls this service places. Same number as inbound --
 # +918071580257 is the one number this project uses in both directions.
 DIAL_FROM_NUMBER = os.getenv("DIAL_FROM_NUMBER", "+918071580257")
+
+# /dial has no other access control -- without this, anyone who found the
+# URL could place calls on this Vobiz account for free. campaign-dispatch
+# (the Supabase function that drives bulk campaign calling) sends the same
+# value in X-Dial-Secret.
+DIAL_SECRET = os.getenv("DIAL_SECRET", "")
+
+# Where a finished campaign call's outcome is reported -- a different
+# endpoint from voicezen.py's log-call, because a campaign call's customer
+# is already known directly (campaigns.customer_id) and doesn't need, or
+# want, the dialled-number lookup log-call does for regular calls.
+CAMPAIGN_OUTCOME_URL = os.getenv(
+    "CAMPAIGN_OUTCOME_URL",
+    os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/campaign-outcome"
+    if os.getenv("VOICEZEN_URL") else "",
+)
+VOICE_AGENT_SECRET = os.getenv("VOICEZEN_AGENT_SECRET", "")
+VOICEZEN_ANON_KEY = os.getenv("VOICEZEN_ANON_KEY", "")
 
 TTS_SAMPLE_RATE = 24000  # Raya's native output; Vobiz playAudio accepts L16/24000 directly.
 STT_SAMPLE_RATE = 16000  # Vobiz inbound contentType we request; Sarvam recommends 16k.
@@ -122,6 +140,47 @@ def load_client_script(dialed_number: str | None):
     return client, module.GREETING, module.INSTRUCTIONS
 
 
+# A generic outbound-sales-call template, filled in per campaign at dial
+# time -- proven against real scenarios in campaign_demo.py before this was
+# wired into a real call. Deliberately one skeleton, not one prompt per
+# campaign: the script comes entirely from the launch form's fields, so the
+# same code path serves any client's campaign with no per-client branching.
+CAMPAIGN_TEMPLATE = """You are an AI calling agent making an OUTBOUND call on behalf of {business_name}.
+
+Goal of this call:
+{offering}
+
+If the person sounds interested:
+{call_to_action}
+
+If they raise concerns or objections:
+{objection_handling}
+
+Speak in {language}. Keep replies short -- this is a phone call, not an email.
+Be polite, get to the point fast, and never pretend to be a human if asked directly --
+say you're an AI calling on behalf of {business_name}.
+If they ask "how did you get my number" or "who is this", explain you're calling on behalf
+of {business_name} about a current offer, and offer to remove them from future calls if asked.
+If they ask to speak to a human, be honest that none is available on this call, but offer to
+note their request or have someone call back.
+"""
+
+
+_CAMPAIGN_GREETINGS = {
+    "English": "Hi{name}, I'm an AI assistant calling on behalf of {business_name}.",
+    "Telugu": "నమస్కారం{name}, నేను {business_name} తరఫున మాట్లాడుతున్న AI అసిస్టెంట్‌ని.",
+    "Hindi": "नमस्ते{name}, मैं {business_name} की ओर से बात कर रहा AI असिस्टेंट हूँ।",
+    "Tamil": "வணக்கம்{name}, நான் {business_name} சார்பாக பேசும் AI உதவியாளர்.",
+}
+
+
+def campaign_greeting(campaign: dict) -> str:
+    language = campaign.get("language") or "English"
+    template = _CAMPAIGN_GREETINGS.get(language, _CAMPAIGN_GREETINGS["English"])
+    name = campaign.get("contact_name")
+    return template.format(name=f" {name}" if name else "", business_name=campaign["business_name"])
+
+
 # ---------------------------------------------------------------- webhook
 
 # /answer (HTTP) and /media (WebSocket) are separate connections for the same
@@ -153,11 +212,15 @@ async def answer(request: Request):
     log.info("answer: call=%s from=%s to=%s direction=%s",
               call_uuid, form.get("From"), form.get("To"), direction)
     if call_uuid:
-        pending_call_info[call_uuid] = {
+        # /dial may have already stashed a `campaign` dict here, keyed by the
+        # same UUID Vobiz assigns (its request_uuid becomes this CallUUID) --
+        # update() rather than overwrite so that survives.
+        entry = pending_call_info.setdefault(call_uuid, {})
+        entry.update({
             "from": form.get("From"),
             "to": form.get("To"),
             "direction": direction,
-        }
+        })
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -182,11 +245,20 @@ async def hangup(request: Request):
 async def dial(request: Request):
     """Place an outbound call. Reuses /answer and /hangup unchanged -- Vobiz
     calls answer_url the same way once an outbound call connects as it does
-    for an inbound one, so the whole CallSession pipeline is identical."""
+    for an inbound one, so the whole CallSession pipeline is identical.
+
+    Optional `campaign` object in the body marks this as a campaign call --
+    see CallSession.start() for how that changes which script gets spoken
+    and where the outcome gets reported.
+    """
+    if DIAL_SECRET and request.headers.get("x-dial-secret") != DIAL_SECRET:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
     body = await request.json()
     to = body.get("to")
     if not to:
-        return {"error": "missing 'to'"}, 400
+        return JSONResponse({"error": "missing 'to'"}, status_code=400)
+    campaign = body.get("campaign")
 
     # request.base_url reflects what uvicorn itself saw, not what the caller
     # actually reached -- Caddy terminates TLS in front of this container and
@@ -214,7 +286,14 @@ async def dial(request: Request):
             json=payload, timeout=aiohttp.ClientTimeout(total=15),
         ) as r:
             data = await r.json()
-            log.info("dial: from=%s to=%s -> HTTP %s %s", DIAL_FROM_NUMBER, to, r.status, data)
+            log.info("dial: from=%s to=%s campaign=%s -> HTTP %s %s",
+                      DIAL_FROM_NUMBER, to, bool(campaign), r.status, data)
+            # Stash the campaign context under whatever UUID Vobiz just
+            # handed back -- /answer's own webhook arrives with the same
+            # UUID as CallUUID and merges into this same dict entry.
+            request_uuid = data.get("request_uuid")
+            if r.status == 200 and campaign and request_uuid:
+                pending_call_info[request_uuid] = {"campaign": campaign}
             return data
 
 
@@ -435,6 +514,7 @@ class CallSession:
         self._from_number: str | None = None
         self._to_number: str | None = None
         self._direction = "inbound"
+        self._campaign: dict | None = None
         self._started_at: float | None = None
         self._done = asyncio.Event()
 
@@ -468,10 +548,22 @@ class CallSession:
             self._from_number = info.get("from")
             self._to_number = info.get("to")
             self._direction = info.get("direction", "inbound")
+            self._campaign = info.get("campaign")
 
-        self.client, greeting, instructions = load_client_script(self._client_number)
-        log.info("serving client '%s' (%s call, identified by %s)",
-                  self.client["client_id"], self._direction, self._client_number)
+        if self._campaign:
+            # Campaign calls skip client-registry resolution entirely -- the
+            # script comes from the campaign's own fields, not any client's
+            # fixed prompt, and the customer is already known directly
+            # (campaigns.customer_id), not looked up from a number at all.
+            instructions = CAMPAIGN_TEMPLATE.format(**self._campaign)
+            greeting = campaign_greeting(self._campaign)
+            log.info("serving campaign %s contact %s (%s)",
+                      self._campaign.get("campaign_id"), self._campaign.get("contact_id"),
+                      self._campaign.get("business_name"))
+        else:
+            self.client, greeting, instructions = load_client_script(self._client_number)
+            log.info("serving client '%s' (%s call, identified by %s)",
+                      self.client["client_id"], self._direction, self._client_number)
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
         await self.stt.connect()
@@ -616,6 +708,11 @@ class CallSession:
         duration = time.time() - self._started_at
         turns = [m for m in self.messages if m["role"] != "system"]
         transcript = "\n".join(f"[{m['role']}] {m['content']}" for m in turns)
+
+        if self._campaign:
+            await self._report_campaign_call(duration, transcript)
+            return
+
         summary = None
         caller_name = None
         if transcript.strip():
@@ -663,6 +760,77 @@ class CallSession:
             )
         except Exception:
             log.exception("call report failed")
+
+    async def _report_campaign_call(self, duration: float, transcript: str) -> None:
+        """Campaign calls report to campaign-outcome, not voicezen -- the
+        customer is already known directly (campaigns.customer_id), so this
+        skips the dialled-number lookup entirely rather than trying to force
+        a campaign call through a path built for a client's own number."""
+        outcome = None
+        summary = None
+        if transcript.strip():
+            try:
+                raw = await asyncio.to_thread(
+                    llm_reply,
+                    [
+                        {"role": "system", "content": (
+                            "Read this outbound sales call transcript. Reply "
+                            "with exactly two lines, nothing else:\n"
+                            "Line 1: a short outcome tag -- one of: interested, "
+                            "not_interested, callback_requested, no_answer, "
+                            "wrong_number, do_not_call, unclear\n"
+                            "Line 2: a one-to-two sentence note for a sales "
+                            "dashboard on what happened and any next step."
+                        )},
+                        {"role": "user", "content": transcript[:12000]},
+                    ],
+                )
+                first_line, _, rest = raw.partition("\n")
+                outcome = first_line.strip() or None
+                summary = rest.strip() or None
+            except Exception:
+                log.exception("campaign call summary failed -- reporting without one")
+
+        if not CAMPAIGN_OUTCOME_URL or not VOICE_AGENT_SECRET:
+            log.error("campaign call finished but CAMPAIGN_OUTCOME_URL/secret "
+                      "not configured -- outcome for contact %s is lost",
+                      self._campaign.get("contact_id"))
+            return
+        # self.http is already closed by close() before _report() runs (see
+        # close()'s ordering) -- a fresh short-lived session is needed here,
+        # not the session that belonged to the call itself.
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    CAMPAIGN_OUTCOME_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-agent-secret": VOICE_AGENT_SECRET,
+                        "apikey": VOICEZEN_ANON_KEY,
+                        "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                    },
+                    json={
+                        "campaign_id": self._campaign.get("campaign_id"),
+                        "contact_id": self._campaign.get("contact_id"),
+                        "customer_id": self._campaign.get("customer_id"),
+                        "call_duration": duration,
+                        "call_status": "completed",
+                        "outcome": outcome,
+                        "transcript": transcript or None,
+                        "call_summary": summary,
+                        "language": self._campaign.get("language"),
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    if r.status != 200:
+                        log.error("campaign-outcome report failed: HTTP %s %s",
+                                  r.status, await r.text())
+                    else:
+                        log.info("campaign call reported: campaign=%s contact=%s outcome=%s",
+                                  self._campaign.get("campaign_id"),
+                                  self._campaign.get("contact_id"), outcome)
+        except Exception:
+            log.exception("campaign-outcome request failed")
 
 
 # ---------------------------------------------------------------- WS endpoint
