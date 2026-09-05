@@ -829,6 +829,7 @@ class CallSession:
         a campaign call through a path built for a client's own number."""
         outcome = None
         summary = None
+        address = None
         if transcript.strip():
             try:
                 raw = await asyncio.to_thread(
@@ -836,19 +837,24 @@ class CallSession:
                     [
                         {"role": "system", "content": (
                             "Read this outbound sales call transcript. Reply "
-                            "with exactly two lines, nothing else:\n"
+                            "with exactly three lines, nothing else:\n"
                             "Line 1: a short outcome tag -- one of: interested, "
                             "not_interested, callback_requested, no_answer, "
                             "wrong_number, do_not_call, unclear\n"
-                            "Line 2: a one-to-two sentence note for a sales "
+                            "Line 2: the caller's full delivery address if they "
+                            "gave one during the call (combine all the parts "
+                            "into one line), otherwise the literal word none\n"
+                            "Line 3: a one-to-two sentence note for a sales "
                             "dashboard on what happened and any next step."
                         )},
                         {"role": "user", "content": transcript[:12000]},
                     ],
                 )
-                first_line, _, rest = raw.partition("\n")
-                outcome = first_line.strip() or None
-                summary = rest.strip() or None
+                lines = raw.split("\n", 2)
+                outcome = lines[0].strip() or None
+                if len(lines) > 1 and lines[1].strip().lower() != "none":
+                    address = lines[1].strip()
+                summary = lines[2].strip() if len(lines) > 2 else None
             except Exception:
                 log.exception("campaign call summary failed -- reporting without one")
 
@@ -879,6 +885,7 @@ class CallSession:
                         "outcome": outcome,
                         "transcript": transcript or None,
                         "call_summary": summary,
+                        "address": address,
                         "language": self._campaign.get("language"),
                     },
                     timeout=aiohttp.ClientTimeout(total=15),
