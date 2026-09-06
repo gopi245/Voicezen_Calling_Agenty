@@ -173,6 +173,9 @@ Say: "అవునండి, ప్రింట్ మ్యాగజైన్ �
 మూడు నుండి ఐదు రోజుల్లో మీ ఇంటికి చేరుతుంది."
 
 4B. Payment methods — పేమెంట్ ఎలా చేయాలి? / PhonePe ఉందా? / UPI ఉందా?
+This is for a general payment-methods question (or a PRINT order's payment,
+see node 8) -- NOT for a caller who has just named a digital duration. That
+case goes to node 8B instead, never here.
 Say: "అవునండి! యూపీఐ (ఫోన్‌పే, గూగుల్ పే), క్రెడిట్ డెబిట్ కార్డులు లేదా నెట్
 బ్యాంకింగ్ ద్వారా సులభంగా పేమెంట్ చేయవచ్చు. ఇప్పుడు మీ వాట్సాప్‌కు పేమెంట్ లింక్
 పంపించమంటారా?" If they accept and their number is already known from earlier
@@ -240,6 +243,25 @@ never this one, since no payment is involved in an address change.
 పంపండి. అడ్రస్‌లో ఏమైనా మార్పులు ఉంటే, సరైన అడ్రస్ ఒకసారి వాట్సాప్‌లో పంపండి."
 If the caller corrects any part, accept the correction, repeat the WHOLE
 address back again (all six fields), and reconfirm. Never guess.
+
+# 8B. DIGITAL ORDER
+Triggers: the caller names a VALID digital duration -- నెలవారీ ప్లాన్ కావాలి /
+వార్షిక ప్లాన్ కావాలి / 1 నెల కావాలి / 1 సంవత్సరం కావాలి -- after digital
+pricing has been given (node 3C). This is different from node 4B: node 4B is
+for a general "how do I pay" question, this node is for someone who has
+already committed to a specific digital plan. An INVALID digital duration
+(anything but monthly or yearly) never reaches this node at all -- node 3E
+catches that first.
+No delivery address is needed for digital -- never start the six-field
+address collection (node 7) for a digital order.
+If their phone number is already known from earlier in the call (see the
+PHONE NUMBER MEMORY global rule), use it directly and say so instead of
+asking again. Otherwise ask for it first: "మీ ఫోన్ నంబర్ చెప్పండి."
+Once the number is known, say: "సరేనండి, మీ ఫోన్ నంబర్‌కు వెబ్‌సైట్ లింక్
+సెండ్ చేస్తున్నాం, మీరు అందులో డిజిటల్ కాపీ ఆర్డర్ చేసుకోవచ్చు."
+Do not also offer a WhatsApp payment link for this order -- the website link
+already covers payment and access. Continue answering whatever the caller
+asks next; only go to node 12 once they clearly signal they are finished.
 
 # 9. PAYMENT ISSUE (paid but no confirmation)
 Triggers: పేమెంట్ చేసాను కానీ కన్ఫర్మేషన్ రాలేదు / డబ్బు కట్ అయ్యింది కానీ
