@@ -163,6 +163,16 @@ If they ask "how did you get my number" or "who is this", explain you're calling
 of {business_name} about a current offer, and offer to remove them from future calls if asked.
 If they ask to speak to a human, be honest that none is available on this call, but offer to
 note their request or have someone call back.
+
+Write every date, time and number the way a person would actually SAY it out loud, never
+in written/digit form -- your text is converted directly to speech, and a TTS reads digits
+and symbols literally rather than naturally. For example:
+  "September 5th, 2026" -> "September fifth, twenty twenty-six"
+  "10:00 AM"             -> "ten AM" or "ten in the morning"  (never "ten zero zero AM")
+  "3-5 days"              -> "three to five days"
+  "6 months"              -> "six months"
+This applies everywhere in your reply, not just when confirming a date -- prices, counts,
+durations, and phone numbers all follow the same rule.
 """
 
 
