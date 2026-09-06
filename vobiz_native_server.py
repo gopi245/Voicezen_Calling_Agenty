@@ -181,6 +181,13 @@ def campaign_greeting(campaign: dict) -> str:
     return template.format(name=f" {name}" if name else "", business_name=campaign["business_name"])
 
 
+# Raya (TTS) and Sarvam (STT) language codes for each language a campaign or
+# instant-lead call can be configured with. A regular client call (Gundusoodi
+# etc.) has no `language` field at all and stays on the Telugu default below.
+_TTS_LANGUAGE_CODES = {"English": "en", "Telugu": "te", "Hindi": "hi", "Tamil": "ta"}
+_STT_LANGUAGE_CODES = {"English": "en-IN", "Telugu": "te-IN", "Hindi": "hi-IN", "Tamil": "ta-IN"}
+
+
 # ---------------------------------------------------------------- webhook
 
 # /answer (HTTP) and /media (WebSocket) are separate connections for the same
@@ -381,7 +388,7 @@ class SarvamSTT:
         self._session: aiohttp.ClientSession | None = None
         self._recv_task: asyncio.Task | None = None
 
-    async def connect(self):
+    async def connect(self, language_code: str = "te-IN"):
         self._session = aiohttp.ClientSession()
         params = {
             # Pinned, not "unknown" (auto-detect). Two real calls showed
@@ -389,9 +396,9 @@ class SarvamSTT:
             # utterances -- confident, wrong-script transcripts in Hindi,
             # Punjabi, Kannada, and English (9 of ~19 turns in one call),
             # mostly during short number-heavy phrases like a house number or
-            # street name. Callers here are Telugu speakers; a caller who
-            # genuinely code-switches to English mid-call is the tradeoff.
-            "language-code": "te-IN",
+            # street name. Defaults to Telugu (this client's callers), but a
+            # campaign/instant-lead call passes its own configured language.
+            "language-code": language_code,
             "model": "saaras:v3",
             "vad_signals": "true",
             "sample_rate": str(STT_SAMPLE_RATE),
@@ -468,15 +475,20 @@ class SarvamSTT:
 
 # ---------------------------------------------------------------- Raya TTS
 
-async def synthesize(session: aiohttp.ClientSession, text: str):
+async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te"):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
     Same endpoint and F32LE->S16LE conversion as agent/tts_raya.py; ported here
     directly rather than importing that module, since it depends on a running
     LiveKit job context this process doesn't have.
+
+    `language` defaults to Telugu (this client's callers) but a campaign or
+    instant-lead call passes its own configured language -- without this,
+    English text was still synthesised with Telugu pronunciation rules,
+    which is why an English word like "VoiceZen" came out mispronounced.
     """
     body = {"text": text, "voice_id": RAYA_VOICE_ID, "model": "standard",
-            "language": "te", "sample_rate": TTS_SAMPLE_RATE, "speed": 1}
+            "language": language, "sample_rate": TTS_SAMPLE_RATE, "speed": 1}
     async with session.post(
         "https://hub.getraya.app/v1/text-to-speech/stream",
         headers={"X-API-Key": RAYA_API_KEY, "Content-Type": "application/json",
@@ -576,6 +588,11 @@ class CallSession:
         self._to_number: str | None = None
         self._direction = "inbound"
         self._campaign: dict | None = None
+        # Telugu by default (this client's callers) -- overridden in start()
+        # for a campaign/instant-lead call configured with a different
+        # language.
+        self._tts_language = "te"
+        self._stt_language = "te-IN"
         self._started_at: float | None = None
         self._done = asyncio.Event()
 
@@ -618,16 +635,19 @@ class CallSession:
             # (campaigns.customer_id), not looked up from a number at all.
             instructions = CAMPAIGN_TEMPLATE.format(**self._campaign)
             greeting = campaign_greeting(self._campaign)
-            log.info("serving campaign %s contact %s (%s)",
+            language_name = self._campaign.get("language") or "English"
+            self._tts_language = _TTS_LANGUAGE_CODES.get(language_name, "te")
+            self._stt_language = _STT_LANGUAGE_CODES.get(language_name, "te-IN")
+            log.info("serving campaign %s contact %s (%s, language=%s)",
                       self._campaign.get("campaign_id"), self._campaign.get("contact_id"),
-                      self._campaign.get("business_name"))
+                      self._campaign.get("business_name"), language_name)
         else:
             self.client, greeting, instructions = load_client_script(self._client_number)
             log.info("serving client '%s' (%s call, identified by %s)",
                       self.client["client_id"], self._direction, self._client_number)
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
-        await self.stt.connect()
+        await self.stt.connect(self._stt_language)
         # Recorded in history immediately, not after _speak() finishes -- a
         # real call showed the bug this avoids: the caller's first reply
         # arrived before this line existed, so Gemini's context had no
@@ -706,7 +726,7 @@ class CallSession:
         self._checkpoint_n += 1
         name = f"turn-{self._checkpoint_n}"
         try:
-            async for chunk in synthesize(self.http, text):
+            async for chunk in synthesize(self.http, text, self._tts_language):
                 # ~20ms frames at 24kHz/16-bit mono = 960 bytes.
                 frame = 960
                 for i in range(0, len(chunk), frame):
