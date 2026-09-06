@@ -636,14 +636,15 @@ class CallSession:
             instructions = CAMPAIGN_TEMPLATE.format(**self._campaign)
             greeting = campaign_greeting(self._campaign)
             language_name = self._campaign.get("language") or "English"
-            # TTS stays on "te" (the __init__ default) -- Raya returned HTTP
-            # 422 "malformed or invalid" for "en" on a real call, going
-            # completely silent for the rest of that call. The Tanvi voice
-            # may simply not support other language codes; needs Raya's docs
-            # or a working voice/language pairing confirmed before this is
-            # made dynamic again. STT has no such problem -- Sarvam accepted
-            # "en-IN" fine and transcribed the caller's English correctly.
-            self._stt_language = _STT_LANGUAGE_CODES.get(language_name, "te-IN")
+            # Both TTS and STT stay on the __init__ defaults (te / te-IN) for
+            # now, matching each other, until Raya's TTS actually supports a
+            # language other than Telugu -- Raya returned HTTP 422 for "en"
+            # on a real call and went silent for the rest of the
+            # conversation. Sarvam STT itself had no problem accepting
+            # "en-IN" (correctly transcribed English speech on that same
+            # call), but leaving STT on English while TTS can only reply in
+            # Telugu would be a confusing half-fix, so both are pinned to
+            # Telugu together until TTS is properly fixed.
             log.info("serving campaign %s contact %s (%s, language=%s)",
                       self._campaign.get("campaign_id"), self._campaign.get("contact_id"),
                       self._campaign.get("business_name"), language_name)
