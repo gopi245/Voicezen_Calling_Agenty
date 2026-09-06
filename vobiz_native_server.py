@@ -227,11 +227,27 @@ _CAMPAIGN_GREETINGS = {
 }
 
 
+# Business names arrive in Latin script (customers.company_name), but the
+# greeting is a fixed template, not an LLM turn -- there's no transliteration
+# step before it's spoken. A real call confirmed this sounds garbled ("voicezen"
+# read aloud mid-Telugu-sentence came out like "voizem"), even though the LLM
+# itself correctly writes "వాయిస్‌జెన్" later in the same call, once it's
+# generating text itself. This covers the one line that skips the LLM.
+# Extend this dict as more clients are onboarded for a non-Latin-script call.
+_BUSINESS_NAME_TRANSLITERATIONS = {
+    "Telugu": {"voicezen": "వాయిస్‌జెన్"},
+    "Hindi": {"voicezen": "वॉइसज़ेन"},
+    "Tamil": {"voicezen": "வாய்ஸ்ஜென்"},
+}
+
+
 def campaign_greeting(campaign: dict) -> str:
     language = campaign.get("language") or "English"
     template = _CAMPAIGN_GREETINGS.get(language, _CAMPAIGN_GREETINGS["English"])
     name = campaign.get("contact_name")
-    return template.format(name=f" {name}" if name else "", business_name=campaign["business_name"])
+    business_name = campaign["business_name"]
+    transliterated = _BUSINESS_NAME_TRANSLITERATIONS.get(language, {}).get(business_name.strip().lower())
+    return template.format(name=f" {name}" if name else "", business_name=transliterated or business_name)
 
 
 # Raya (TTS) and Sarvam (STT) language codes for each language a campaign or
