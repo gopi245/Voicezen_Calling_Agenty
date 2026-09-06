@@ -26,12 +26,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib
+import io
 import json
 import logging
 import os
 import struct
 import sys
 import time
+import wave
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -123,7 +125,23 @@ def _instructions_no_livekit(base_instructions: str) -> str:
         f"\n\nWhen you have said goodbye and the call should end, append the "
         f"exact literal text {END_MARKER} at the very end of that message, "
         f"after your spoken words. Do not say {END_MARKER} out loud -- it is "
-        f"a control marker, stripped before your words are spoken."
+        f"a control marker, stripped before your words are spoken.\n\n"
+        f"Ending the call is IRREVERSIBLE once {END_MARKER} is sent -- the line "
+        f"physically hangs up, so only attach it when the caller has clearly and "
+        f"unambiguously indicated the ENTIRE conversation is over (a plain "
+        f"goodbye, \"that's all\", \"thanks, bye\"). A real call once ended "
+        f"right as the caller was mid-sentence trying to change something, "
+        f"because their reply was read as a simple confirmation when it wasn't "
+        f"one. Specifically:\n"
+        f"  - Confirming ONE detail (a time, an address, a plan) is NOT the "
+        f"same as ending the call -- after confirming it, wait for the caller's "
+        f"next turn instead of ending, unless they explicitly say goodbye in "
+        f"that same reply.\n"
+        f"  - A short or unclear reply (\"okay\", \"mm\", a mumbled word) is "
+        f"NEVER grounds for ending the call -- ask a clarifying question "
+        f"instead of guessing they are done.\n"
+        f"  - If there is any real chance the caller might still say something "
+        f"else, do not attach {END_MARKER} yet."
     )
 
 
@@ -618,6 +636,12 @@ class CallSession:
         self._pending: list[str] = []
         self._debounce_task: asyncio.Task | None = None
         self._checkpoint_n = 0
+        # Raw caller-side PCM16 audio (what STT receives), captured so a call
+        # can actually be listened to afterward rather than only read as a
+        # transcript -- a transcript alone couldn't settle whether a real
+        # call's odd caller replies were background noise or a real
+        # misunderstanding.
+        self._caller_audio_chunks: list[bytes] = []
         self._call_uuid = None
         self._from_number: str | None = None
         self._to_number: str | None = None
@@ -699,7 +723,9 @@ class CallSession:
         self._speak_task = asyncio.create_task(self._speak(greeting))
 
     async def on_media(self, pcm16_b64: str):
-        await self.stt.send_audio(base64.b64decode(pcm16_b64))
+        raw = base64.b64decode(pcm16_b64)
+        self._caller_audio_chunks.append(raw)
+        await self.stt.send_audio(raw)
 
     async def _on_speech_start(self):
         """Sarvam VAD says the caller started talking. If the caller is still
@@ -822,6 +848,22 @@ class CallSession:
         await self.http.close()
         await self._report()
 
+    def _encode_recording_b64(self) -> str | None:
+        """Caller-side audio only (what STT received), as a base64 WAV.
+        Lets a call actually be listened to afterward instead of only read
+        as a transcript -- a transcript alone couldn't settle whether a real
+        call's odd caller replies were background noise or a genuine
+        misunderstanding."""
+        if not self._caller_audio_chunks:
+            return None
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit PCM, matches what Sarvam receives
+            wf.setframerate(STT_SAMPLE_RATE)
+            wf.writeframes(b"".join(self._caller_audio_chunks))
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
     async def _report(self):
         """Send the finished call to the VoiceZen Dashboard. Runs after
         everything else has torn down, matching voicezen.py's own stated
@@ -831,9 +873,10 @@ class CallSession:
         duration = time.time() - self._started_at
         turns = [m for m in self.messages if m["role"] != "system"]
         transcript = "\n".join(f"[{m['role']}] {m['content']}" for m in turns)
+        recording_b64 = self._encode_recording_b64()
 
         if self._campaign:
-            await self._report_campaign_call(duration, transcript)
+            await self._report_campaign_call(duration, transcript, recording_b64)
             return
 
         summary = None
@@ -880,11 +923,13 @@ class CallSession:
                 call_summary=summary,
                 call_status="completed",
                 language="te-IN",
+                recording_base64=recording_b64,
             )
         except Exception:
             log.exception("call report failed")
 
-    async def _report_campaign_call(self, duration: float, transcript: str) -> None:
+    async def _report_campaign_call(self, duration: float, transcript: str,
+                                     recording_b64: str | None = None) -> None:
         """Campaign calls report to campaign-outcome, not voicezen -- the
         customer is already known directly (campaigns.customer_id), so this
         skips the dialled-number lookup entirely rather than trying to force
@@ -949,6 +994,7 @@ class CallSession:
                         "call_summary": summary,
                         "address": address,
                         "language": self._campaign.get("language"),
+                        "recording_base64": recording_b64,
                     },
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as r:

@@ -120,6 +120,7 @@ def report_call(
     call_status: str = "completed",
     language: str | None = None,
     captured_data: list[dict[str, Any]] | None = None,
+    recording_base64: str | None = None,
 ) -> None:
     """Send one finished call. Never raises."""
     payload = {
@@ -135,6 +136,9 @@ def report_call(
         "call_status": call_status,
         "language": language,
         "captured_data": {"events": captured_data} if captured_data else None,
+        # Caller-side audio only, base64 WAV -- lets a call actually be
+        # listened to, not just read as a transcript.
+        "recording_base64": recording_base64,
     }
 
     _send(payload)
