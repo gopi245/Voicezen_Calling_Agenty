@@ -166,13 +166,28 @@ note their request or have someone call back.
 
 Write every date, time and number the way a person would actually SAY it out loud, never
 in written/digit form -- your text is converted directly to speech, and a TTS reads digits
-and symbols literally rather than naturally. For example:
+and symbols literally rather than naturally. Follow the convention of whichever language
+you are speaking in ({language}), not English written style translated word for word.
+
+If speaking English, for example:
   "September 5th, 2026" -> "September fifth, twenty twenty-six"
   "10:00 AM"             -> "ten AM" or "ten in the morning"  (never "ten zero zero AM")
   "3-5 days"              -> "three to five days"
   "6 months"              -> "six months"
+
+If speaking Telugu, use how a Telugu speaker actually says dates and times, not a
+transliteration of the English format:
+  "September 5th"        -> "సెప్టెంబర్ ఐదు" or "సెప్టెంబర్ ఐదవ తారీకు"
+  "2026"                  -> "రెండు వేల ఇరవై ఆరు"  (never digit-by-digit here -- a year is
+                             said as one number, unlike a phone number or pincode)
+  "10:00 AM"              -> "ఉదయం పది గంటలకు"  (never "పది సున్నా సున్నా AM")
+  "3-5 days"               -> "మూడు నుండి ఐదు రోజుల్లో"
+  "6 months"               -> "ఆరు నెలలు"
+
 This applies everywhere in your reply, not just when confirming a date -- prices, counts,
-durations, and phone numbers all follow the same rule.
+durations, and phone numbers all follow the same rule (a phone number or pincode is still
+read digit by digit, since that is how a person actually says one -- it is only a year,
+price or count that is spoken as a whole number).
 """
 
 
