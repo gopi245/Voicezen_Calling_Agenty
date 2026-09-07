@@ -33,6 +33,7 @@ import os
 import struct
 import sys
 import time
+import uuid
 import wave
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -89,6 +90,20 @@ DIAL_SECRET = os.getenv("DIAL_SECRET", "")
 CAMPAIGN_OUTCOME_URL = os.getenv(
     "CAMPAIGN_OUTCOME_URL",
     os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/campaign-outcome"
+    if os.getenv("VOICEZEN_URL") else "",
+)
+# In-browser test calls: VALIDATE_TEST_SESSION_URL checks the one-time token
+# a browser presents when it opens /test-media; REPORT_TEST_CALL_URL logs
+# the finished test call to call_logs (same billing path as a real call --
+# no discount, per a deliberate pricing decision).
+VALIDATE_TEST_SESSION_URL = os.getenv(
+    "VALIDATE_TEST_SESSION_URL",
+    os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/validate-test-session"
+    if os.getenv("VOICEZEN_URL") else "",
+)
+REPORT_TEST_CALL_URL = os.getenv(
+    "REPORT_TEST_CALL_URL",
+    os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/report-test-call"
     if os.getenv("VOICEZEN_URL") else "",
 )
 VOICE_AGENT_SECRET = os.getenv("VOICEZEN_AGENT_SECRET", "")
@@ -950,6 +965,9 @@ class CallSession:
         customer is already known directly (campaigns.customer_id), so this
         skips the dialled-number lookup entirely rather than trying to force
         a campaign call through a path built for a client's own number."""
+        if self._campaign.get("is_test"):
+            await self._report_test_call(duration, transcript)
+            return
         outcome = None
         summary = None
         address = None
@@ -1024,6 +1042,41 @@ class CallSession:
         except Exception:
             log.exception("campaign-outcome request failed")
 
+    async def _report_test_call(self, duration: float, transcript: str) -> None:
+        """In-browser test calls: just one call_logs row, billed the same as
+        any real call (no discount). No campaign_contacts row exists for
+        these (there's no real contact, just whoever is testing), so this
+        skips straight to report-test-call rather than campaign-outcome."""
+        if not REPORT_TEST_CALL_URL or not VOICE_AGENT_SECRET:
+            log.error("test call finished but REPORT_TEST_CALL_URL/secret "
+                      "not configured -- this test call's minutes are lost")
+            return
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    REPORT_TEST_CALL_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-agent-secret": VOICE_AGENT_SECRET,
+                        "apikey": VOICEZEN_ANON_KEY,
+                        "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                    },
+                    json={
+                        "customer_id": self._campaign.get("customer_id"),
+                        "call_duration": duration,
+                        "transcript": transcript or None,
+                        "language": self._campaign.get("language"),
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    if r.status != 200:
+                        log.error("report-test-call failed: HTTP %s %s", r.status, await r.text())
+                    else:
+                        log.info("test call reported: customer=%s duration=%.0fs",
+                                  self._campaign.get("customer_id"), duration)
+        except Exception:
+            log.exception("report-test-call request failed")
+
 
 # ---------------------------------------------------------------- WS endpoint
 
@@ -1057,6 +1110,87 @@ async def media(ws: WebSocket):
 
     except WebSocketDisconnect:
         log.info("vobiz websocket closed (call ended)")
+    finally:
+        await session.close()
+
+
+@app.websocket("/test-media")
+async def test_media(ws: WebSocket):
+    """In-browser test calls -- a browser microphone in place of a real
+    Vobiz phone call. Speaks the IDENTICAL JSON protocol as /media (start /
+    media / playedStream / clearedAudio events, playAudio/checkpoint sent
+    back) so CallSession's turn-taking, barge-in and TTS logic all work
+    completely unchanged; the only new part is the auth handshake up front,
+    since a browser has no shared secret to present the way server-to-server
+    calls (e.g. /dial) do.
+    """
+    await ws.accept()
+
+    try:
+        raw = await ws.receive_text()
+        token = json.loads(raw).get("token")
+    except Exception:
+        await ws.close(code=4000)
+        return
+    if not token or not VALIDATE_TEST_SESSION_URL or not VOICE_AGENT_SECRET:
+        await ws.send_text(json.dumps({"event": "error", "message": "test calling is not configured"}))
+        await ws.close(code=4000)
+        return
+
+    async with aiohttp.ClientSession() as s:
+        try:
+            async with s.post(
+                VALIDATE_TEST_SESSION_URL,
+                headers={"Content-Type": "application/json", "x-agent-secret": VOICE_AGENT_SECRET,
+                         "apikey": VOICEZEN_ANON_KEY, "Authorization": f"Bearer {VOICEZEN_ANON_KEY}"},
+                json={"token": token},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    await ws.send_text(json.dumps({"event": "error", "message": "invalid or expired test session"}))
+                    await ws.close(code=4001)
+                    return
+                validated = await r.json()
+        except Exception:
+            log.exception("validate-test-session request failed")
+            await ws.send_text(json.dumps({"event": "error", "message": "could not start test call"}))
+            await ws.close(code=4000)
+            return
+
+    call_uuid = str(uuid.uuid4())
+    campaign = dict(validated["campaign"])
+    campaign["campaign_id"] = None
+    campaign["contact_id"] = None
+    campaign["customer_id"] = validated["customer_id"]
+    campaign["is_test"] = True
+    pending_call_info[call_uuid] = {"campaign": campaign, "direction": "outbound", "from": "test", "to": "test"}
+
+    await ws.send_text(json.dumps({"event": "authed", "callId": call_uuid}))
+
+    session = CallSession(ws)
+    try:
+        while True:
+            raw = await ws.receive_text()
+            data = json.loads(raw)
+            event = data.get("event")
+
+            if event == "start":
+                session.stream_id = data["start"]["streamId"]
+                session._call_uuid = data["start"].get("callId")
+                log.info("test call stream started: call=%s", session._call_uuid)
+                await session.start()
+
+            elif event == "media":
+                await session.on_media(data["media"]["payload"])
+
+            elif event == "playedStream":
+                session._on_played(data.get("name"))
+
+            elif event == "clearedAudio":
+                log.info("test call barge-in: playback queue flushed")
+
+    except WebSocketDisconnect:
+        log.info("test call websocket closed")
     finally:
         await session.close()
 
