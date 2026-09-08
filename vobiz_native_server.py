@@ -106,6 +106,17 @@ REPORT_TEST_CALL_URL = os.getenv(
     os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/report-test-call"
     if os.getenv("VOICEZEN_URL") else "",
 )
+# Checked at the start of every call (inbound, campaign, instant-lead, test
+# call alike) -- a customer past their plan's minutes (plus a 10-minute
+# grace buffer) gets a short message instead of the normal conversation.
+# Fails open on any error (network issue, misconfiguration) -- a real
+# customer's call should never get blocked by an unrelated problem on our
+# side, only by genuinely having no minutes left.
+CHECK_MINUTES_URL = os.getenv(
+    "CHECK_MINUTES_URL",
+    os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/check-minutes"
+    if os.getenv("VOICEZEN_URL") else "",
+)
 VOICE_AGENT_SECRET = os.getenv("VOICEZEN_AGENT_SECRET", "")
 VOICEZEN_ANON_KEY = os.getenv("VOICEZEN_ANON_KEY", "")
 
@@ -637,6 +648,36 @@ def llm_reply(messages: list[dict], attempts: int = 3) -> str:
     raise RuntimeError(f"{LLM_MODEL} failed -- {last}")
 
 
+async def check_customer_minutes(customer_id: int) -> bool:
+    """True if this customer still has minutes to spend (plan + topup, plus
+    a 10-minute grace buffer past that). Fails open on any error -- a real
+    customer's call should never get blocked by a network hiccup, only by
+    genuinely having no minutes left."""
+    if not CHECK_MINUTES_URL or not VOICE_AGENT_SECRET:
+        return True
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                CHECK_MINUTES_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-agent-secret": VOICE_AGENT_SECRET,
+                    "apikey": VOICEZEN_ANON_KEY,
+                    "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                },
+                json={"customer_id": customer_id},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    log.error("check-minutes failed: HTTP %s %s", r.status, await r.text())
+                    return True
+                data = await r.json()
+                return bool(data.get("allowed", True))
+    except Exception:
+        log.exception("check-minutes request failed -- allowing the call")
+        return True
+
+
 # ---------------------------------------------------------------- call session
 
 class CallSession:
@@ -742,6 +783,19 @@ class CallSession:
             self.client, greeting, instructions = load_client_script(self._client_number)
             log.info("serving client '%s' (%s call, identified by %s)",
                       self.client["client_id"], self._direction, self._client_number)
+
+        customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
+        if customer_id and not await check_customer_minutes(customer_id):
+            log.warning("call blocked: customer %s has no minutes remaining", customer_id)
+            self.messages = [{"role": "system", "content": "(blocked -- out of minutes)"}]
+            blocked_message = (
+                "క్షమించండి అండి, ప్రస్తుతం ఈ సర్వీస్ అందుబాటులో లేదు. "
+                "దయచేసి మమ్మల్ని నేరుగా సంప్రదించండి."
+            )
+            self.messages.append({"role": "assistant", "content": blocked_message})
+            self._speak_task = asyncio.create_task(self._speak(blocked_message, end_call=True))
+            return
+
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
         await self.stt.connect(self._stt_language)
