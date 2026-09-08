@@ -966,32 +966,73 @@ class CallSession:
 
         summary = None
         caller_name = None
+        captured_data = None
         if transcript.strip():
             try:
                 raw = await asyncio.to_thread(
                     llm_reply,
                     [
                         {"role": "system", "content": (
-                            "Read this phone call transcript. Reply with exactly "
-                            "two lines, nothing else:\n"
-                            "Line 1: the caller's name if they stated one, "
-                            "otherwise the literal word none\n"
-                            "Line 2: a summary for a business dashboard, in "
-                            "English, at most four sentences -- what the caller "
-                            "wanted, any details they gave (address, phone, "
-                            "plan), and the outcome. If they placed an order or "
-                            "made a complaint, say so explicitly."
+                            "Read this phone call transcript. Reply with ONLY a single "
+                            "JSON object, no markdown, no code fences, no extra text, "
+                            "with exactly these keys:\n"
+                            '  "caller_name": the caller\'s name if they stated one, else null\n'
+                            '  "summary": a summary for a business dashboard, in English, '
+                            "at most four sentences -- what the caller wanted, any details "
+                            "they gave, and the outcome. If they placed an order or made a "
+                            "complaint, say so explicitly.\n"
+                            '  "subscription_plan": one of "print 6 months", "print 1 year", '
+                            '"digital 1 month", "digital 1 year" if the caller confirmed an '
+                            "order for one of these EXACT plans, else null\n"
+                            '  "house_number", "street_name", "city", "district", "pincode": '
+                            "the caller's delivery address fields if they gave a print order "
+                            "or address-change address (exactly as they said each one), else null\n"
+                            '  "payment_issue": true if they reported a payment made but not '
+                            "confirmed, else false\n"
+                            '  "delivery_complaint": true if they reported this month\'s '
+                            "magazine not arriving, else false\n"
+                            '  "address_change": true if an existing subscriber asked to '
+                            "change their address, else false"
                         )},
                         {"role": "user", "content": transcript[:12000]},
                     ],
                 )
-                first_line, _, rest = raw.partition("\n")
-                first_line = first_line.strip()
-                if first_line and first_line.lower() != "none":
-                    caller_name = first_line
-                summary = rest.strip() or raw
+                parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
+                caller_name = parsed.get("caller_name") or None
+                summary = parsed.get("summary") or None
+
+                plan = parsed.get("subscription_plan") or None
+                has_address = any(parsed.get(k) for k in ("house_number", "street_name", "city", "district", "pincode"))
+                nodes_visited = []
+                if has_address:
+                    nodes_visited.append("Address Confirmation" if plan else "Print Copy & Address Collection")
+                if plan and plan.startswith("digital"):
+                    nodes_visited.append("Digital Subscription")
+                if parsed.get("payment_issue"):
+                    nodes_visited.append("Payment Issue")
+                if parsed.get("delivery_complaint"):
+                    nodes_visited.append("Delivery Complaint")
+                if parsed.get("address_change"):
+                    nodes_visited.append("Address Change")
+
+                # Shaped to match what the existing "Gundusoodhi - post-call
+                # WhatsApp" n8n workflow already expects (it used to read this
+                # same shape from Dograh's own database) -- reusing its
+                # message-building logic as-is, only the data source changes.
+                captured_data = {
+                    "subscription_plan": plan,
+                    "extracted_variables": {
+                        "customer_name": caller_name,
+                        "house_number": parsed.get("house_number"),
+                        "street_name": parsed.get("street_name"),
+                        "city": parsed.get("city"),
+                        "district": parsed.get("district"),
+                        "pincode": parsed.get("pincode"),
+                    },
+                    "nodes_visited": nodes_visited,
+                }
             except Exception:
-                log.exception("call summary failed -- reporting without one")
+                log.exception("call summary/extraction failed -- reporting without one")
         try:
             # dialed_number identifies which CLIENT this belongs to (see
             # _client_number). caller_number is purely "who was the other
@@ -1009,6 +1050,7 @@ class CallSession:
                 call_status="completed",
                 language="te-IN",
                 recording_base64=recording_b64,
+                captured_data=captured_data,
             )
         except Exception:
             log.exception("call report failed")

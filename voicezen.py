@@ -119,7 +119,7 @@ def report_call(
     call_summary: str | None = None,
     call_status: str = "completed",
     language: str | None = None,
-    captured_data: list[dict[str, Any]] | None = None,
+    captured_data: dict[str, Any] | None = None,
     recording_base64: str | None = None,
 ) -> None:
     """Send one finished call. Never raises."""
@@ -135,7 +135,10 @@ def report_call(
         "call_summary": call_summary,
         "call_status": call_status,
         "language": language,
-        "captured_data": {"events": captured_data} if captured_data else None,
+        # Structured order/address fields, when the call produced any --
+        # shaped to match what the "Gundusoodhi - post-call WhatsApp" n8n
+        # workflow expects. Passed through as-is, not wrapped.
+        "captured_data": captured_data,
         # Caller-side audio only, base64 WAV -- lets a call actually be
         # listened to, not just read as a transcript.
         "recording_base64": recording_base64,
