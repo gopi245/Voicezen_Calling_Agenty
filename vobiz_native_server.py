@@ -50,6 +50,7 @@ sys.path.insert(0, str(HERE.parent / "agent"))
 load_dotenv(HERE / ".env")
 
 import voicezen  # noqa: E402
+from clients_registry import dial_from_for_customer  # noqa: E402
 from clients_registry import lookup as lookup_client  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
@@ -73,9 +74,60 @@ VOBIZ_AUTH_ID = os.environ["VOBIZ_AUTH_ID"]
 VOBIZ_AUTH_TOKEN = os.environ["VOBIZ_AUTH_TOKEN"]
 VOBIZ_API = "https://api.vobiz.ai/api/v1"
 
-# Caller ID for outbound calls this service places. Same number as inbound --
-# +918071580257 is the one number this project uses in both directions.
-DIAL_FROM_NUMBER = os.getenv("DIAL_FROM_NUMBER", "+918071580257")
+# Last-resort caller ID, used only when a call carries no customer_id we can
+# match to a client (see clients_registry.dial_from_for_customer). Every real
+# client dials out as their OWN number -- routing an outbound call through
+# another client's line shows the wrong caller ID and sends anyone who rings
+# back to the wrong script.
+DIAL_FROM_NUMBER = os.getenv("DIAL_FROM_NUMBER", "+918065353946")
+
+DEFAULT_COUNTRY_CODE = os.getenv("DEFAULT_COUNTRY_CODE", "91")
+
+# "Call Me Now" on voicezentech.com only -- a free instant demo call, capped
+# so one visitor can't turn it into an unbounded free conversation. Regular
+# Gundusoodi calls and scheduled/batch campaigns have no such limit.
+INSTANT_LEAD_TIME_LIMIT_SECONDS = int(os.getenv("INSTANT_LEAD_TIME_LIMIT_SECONDS", "120"))
+INSTANT_LEAD_TIME_LIMIT_CLOSING = {
+    "te": "మన సమయం అయిపోయింది అండి. మా team మీకు మళ్ళీ callback చేస్తుంది, ధన్యవాదాలు.",
+    "hi": "हमारा समय पूरा हो गया है। हमारी टीम आपको दोबारा कॉल करेगी, धन्यवाद।",
+    "ta": "நேரம் முடிந்துவிட்டது. எங்கள் குழு உங்களுக்கு மீண்டும் அழைப்பார்கள், நன்றி.",
+    "en": "That's our time for today -- our team will follow up with you shortly. Thank you!",
+    "kn": "ನಮ್ಮ ಸಮಯ ಮುಗಿದಿದೆ. ನಮ್ಮ ತಂಡ ನಿಮಗೆ ಮತ್ತೆ ಕರೆ ಮಾಡುತ್ತದೆ, ಧನ್ಯವಾದಗಳು.",
+    "ml": "സമയം കഴിഞ്ഞു. ഞങ്ങളുടെ ടീം നിങ്ങളെ വീണ്ടും വിളിക്കും, നന്ദി.",
+    "mr": "आमचा वेळ संपला आहे. आमची टीम तुम्हाला पुन्हा कॉल करेल, धन्यवाद.",
+    "bn": "আমাদের সময় শেষ। আমাদের টিম আপনাকে আবার কল করবে, ধন্যবাদ।",
+}
+
+
+def _to_e164(raw: str | None) -> str | None:
+    """Vobiz's own number formatting varies by trunk, so normalize here.
+
+    Seen in the wild on this one account: "+918065353946", "918065353946"
+    and "08071580257" -- E.164, country code without the plus, and the
+    Indian national format. Everything downstream (clients_registry.py and
+    the dashboard's customer_integrations lookup) keys off the E.164 form,
+    and a miss there is silent: the call just serves the wrong client's
+    script and never gets logged.
+
+    Deliberately conservative -- anything that doesn't look like one of the
+    known shapes is returned with a plus and left alone, since guessing
+    harder risks rewriting a number into some other client's.
+    """
+    if not raw:
+        return raw
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return raw
+    if raw.startswith("+"):
+        return "+" + digits
+    # National format: a single leading trunk "0", e.g. 08071580257.
+    if digits.startswith("0"):
+        return "+" + DEFAULT_COUNTRY_CODE + digits.lstrip("0")
+    # Bare subscriber number with no country code, e.g. 8071580257.
+    if len(digits) == 10:
+        return "+" + DEFAULT_COUNTRY_CODE + digits
+    return "+" + digits
+
 
 # /dial has no other access control -- without this, anyone who found the
 # URL could place calls on this Vobiz account for free. campaign-dispatch
@@ -428,8 +480,18 @@ async def dial(request: Request):
     # this derives the public base from PUBLIC_WSS_URL (wss://.../media)
     # instead of trusting the request at all.
     base = PUBLIC_WSS_URL.replace("wss://", "https://").rsplit("/media", 1)[0]
+
+    # Whose line does this call go out on? An explicit dial_from in the body
+    # wins (lets a caller override without a deploy), then the client that
+    # owns this campaign's customer_id, then the service-wide default.
+    from_number = (
+        body.get("dial_from")
+        or dial_from_for_customer((campaign or {}).get("customer_id"))
+        or DIAL_FROM_NUMBER
+    )
+
     payload = {
-        "from": DIAL_FROM_NUMBER,
+        "from": from_number,
         "to": to,
         # The ?direction=outbound query param is how /answer tells this call
         # apart from a real inbound one -- see the comment there.
@@ -447,7 +509,7 @@ async def dial(request: Request):
         ) as r:
             data = await r.json()
             log.info("dial: from=%s to=%s campaign=%s -> HTTP %s %s",
-                      DIAL_FROM_NUMBER, to, bool(campaign), r.status, data)
+                      from_number, to, bool(campaign), r.status, data)
             # Stash the campaign context under whatever UUID Vobiz just
             # handed back -- /answer's own webhook arrives with the same
             # UUID as CallUUID and merges into this same dict entry.
@@ -476,9 +538,10 @@ class SarvamSTT:
 
     URL = "wss://api.sarvam.ai/speech-to-text/ws"
 
-    def __init__(self, on_transcript, on_speech_start):
+    def __init__(self, on_transcript, on_speech_start, on_language=None):
         self._on_transcript = on_transcript
         self._on_speech_start = on_speech_start
+        self._on_language = on_language
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session: aiohttp.ClientSession | None = None
         self._recv_task: asyncio.Task | None = None
@@ -528,7 +591,15 @@ class SarvamSTT:
                 continue
             msg_type = data.get("type")
             if msg_type == "data":
-                transcript = (data.get("data") or {}).get("transcript", "")
+                payload = data.get("data") or {}
+                transcript = payload.get("transcript", "")
+                # Present only when connected with language-code=unknown, i.e.
+                # on a multilingual line. Reported per utterance, so a caller
+                # who switches language mid-call is followed rather than
+                # locked to whatever they opened with.
+                detected = payload.get("language_code") or payload.get("language")
+                if detected and self._on_language:
+                    self._on_language(detected)
                 if transcript:
                     await self._on_transcript(transcript)
             elif msg_type in ("events", "event"):
@@ -570,6 +641,59 @@ class SarvamSTT:
 
 # ---------------------------------------------------------------- Raya TTS
 
+# One voice per language. A Raya voice_id belongs to exactly one language, so
+# a multilingual line needs a different speaker per language rather than one
+# speaker with a language flag. All "standard" model -- mixing an m1 voice_id
+# with model="standard" 404s ("unknown voice_id"), and vice versa.
+# Telugu deliberately stays Tanvi: it was picked by ear against the other four
+# for this project's greeting, and every Gundusoodi call already uses it.
+DEFAULT_TTS_LANGUAGE = "te"
+
+RAYA_VOICES = {
+    "te": os.getenv("RAYA_VOICE_ID", "25a7c7d9-57b3-488a-a880-33edf6642902"),  # Tanvi
+    "hi": "07308011-d790-4187-8ad9-afe7425627e9",  # Neha
+    "ta": "ab17f0d3-3202-4344-8d6c-98c1bea5e518",  # Vignesh
+    "en": "0f24fb66-e495-4781-9e84-1224aa7dacde",  # Nayra (en-in)
+    "kn": "522e4587-6611-4442-afdb-59f20ad5e420",  # Rohan
+    "ml": "42710cb4-fad8-48b9-b89c-960824b485f8",  # Abirami
+    "mr": "0c48e416-d0d8-4518-a778-384172c987fe",  # Kavya
+    "bn": "145c9da5-96ef-4ad0-ba3b-2fafb3a63d87",  # Ritu
+}
+
+
+# Raya validates `language` against this exact list and is case-sensitive:
+# "en-IN" is rejected outright, and bare "en" is rejected in combination with
+# the en-in voice. Sarvam and the campaign config both emit the "xx-IN" shape,
+# so normalize before sending rather than passing a caller's tag straight
+# through -- a rejected language is a turn with no audio at all.
+RAYA_LANGUAGES = {"hi", "mr", "te", "kn", "bn", "as", "en-us", "en-in",
+                  "gu", "en", "ml", "ne", "ta", "pa"}
+
+
+def resolve_voice(language: str | None) -> tuple[str, str]:
+    """(voice_id, language) for Raya -- resolved together, never separately.
+
+    They are one decision, not two: a voice belongs to exactly one language,
+    and Raya rejects a mismatched pair with a 422, which on a live call is
+    silent dead air. Punjabi is the case that proves it -- "pa" is a language
+    Raya accepts, but this account has no Punjabi voice, so pairing the
+    fallback (Telugu) voice with "pa" fails outright. When there's no voice
+    for a language, fall back to the default voice AND its own language.
+
+    Accepts the shapes Sarvam and the campaign config actually emit ("hi",
+    "hi-IN", "en-IN"). Raya's tags are case-sensitive and exact: "en-IN" is
+    rejected, and bare "en" is rejected alongside the en-in voice.
+    """
+    base = (language or "").strip().lower().split("-")[0]
+    # Any flavour of English becomes Indian English -- these are Indian
+    # business callers, and "en-in" is the tag Raya pairs with that voice.
+    tag = "en-in" if base == "en" else base
+    voice = RAYA_VOICES.get(base)
+    if not voice or tag not in RAYA_LANGUAGES:
+        return RAYA_VOICE_ID, DEFAULT_TTS_LANGUAGE
+    return voice, tag
+
+
 async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te"):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
@@ -581,9 +705,15 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     instant-lead call passes its own configured language -- without this,
     English text was still synthesised with Telugu pronunciation rules,
     which is why an English word like "VoiceZen" came out mispronounced.
+
+    The voice has to change with the language, not just the `language` field:
+    a voice_id belongs to exactly one language on Raya, so asking the Telugu
+    speaker to read Hindi gives Telugu pronunciation of Hindi text at best.
+    RAYA_VOICES maps each language to a voice that actually speaks it.
     """
-    body = {"text": text, "voice_id": RAYA_VOICE_ID, "model": "standard",
-            "language": language, "sample_rate": TTS_SAMPLE_RATE, "speed": 1}
+    voice_id, raya_lang = resolve_voice(language)
+    body = {"text": text, "voice_id": voice_id, "model": "standard",
+            "language": raya_lang, "sample_rate": TTS_SAMPLE_RATE, "speed": 1}
     async with session.post(
         "https://hub.getraya.app/v1/text-to-speech/stream",
         headers={"X-API-Key": RAYA_API_KEY, "Content-Type": "application/json",
@@ -693,7 +823,8 @@ class CallSession:
         self.messages: list[dict] = []
         self.client: dict | None = None
         self.http = aiohttp.ClientSession()
-        self.stt = SarvamSTT(self._on_transcript, self._on_speech_start)
+        self.stt = SarvamSTT(self._on_transcript, self._on_speech_start,
+                             self._on_detected_language)
         # `speaking` means "still generating/sending" -- it goes False the
         # instant the last frame is handed to Vobiz. `playing` means "the
         # caller is still HEARING audio", which lasts far longer because Vobiz
@@ -724,8 +855,32 @@ class CallSession:
         # language.
         self._tts_language = "te"
         self._stt_language = "te-IN"
+        # Only a multilingual client lets the caller's own language steer the
+        # reply voice; a pinned line keeps whatever it was configured with.
+        self._follow_caller_language = False
         self._started_at: float | None = None
         self._done = asyncio.Event()
+        # Only set for a "Call Me Now" instant-lead call -- see start().
+        self._time_limit_task: asyncio.Task | None = None
+
+    def _on_detected_language(self, code: str) -> None:
+        """Sarvam reported which language the caller just spoke.
+
+        Only acted on for a multilingual client: on a pinned line the STT is
+        already locked to one language, and a spurious detection there would
+        swap the voice mid-call for no reason.
+        """
+        if not self._follow_caller_language:
+            return
+        base = (code or "").split("-")[0].lower()
+        if not base or base == self._tts_language:
+            return
+        if base not in RAYA_VOICES:
+            # Heard something we have no voice for -- keep the current one
+            # rather than falling back to a default mid-conversation.
+            return
+        log.info("caller language detected: %s (was %s)", base, self._tts_language)
+        self._tts_language = base
 
     @property
     def _client_number(self) -> str | None:
@@ -741,11 +896,18 @@ class CallSession:
         number arrived as "918065353946" with no plus. Both
         clients_registry.py and the dashboard's customer lookup key off the
         + form, so a missing plus silently fails to match either one.
+
+        The inconsistency is per-trunk, not just per-direction: the CDR for
+        one and the same calling phone renders as "919493918625" against
+        Gundusoodi's number but "09493918625" against VoiceZen's, which is
+        the Indian national trunk prefix rather than a country code. Bolting
+        a "+" onto that gives "+09493918625", which matches no client and no
+        customer -- the call would silently fall through to whichever client
+        the registry defaults to. So strip a leading 0 and add the country
+        code instead of assuming every plus-less number is already E.164.
         """
         raw = self._from_number if self._direction == "outbound" else self._to_number
-        if raw and not raw.startswith("+"):
-            raw = "+" + raw
-        return raw
+        return _to_e164(raw)
 
     async def start(self):
         self._started_at = time.time()
@@ -779,10 +941,19 @@ class CallSession:
             log.info("serving campaign %s contact %s (%s, language=%s)",
                       self._campaign.get("campaign_id"), self._campaign.get("contact_id"),
                       self._campaign.get("business_name"), language_name)
+            if self._campaign.get("instant_lead"):
+                self._time_limit_task = asyncio.create_task(
+                    self._enforce_instant_lead_time_limit())
         else:
             self.client, greeting, instructions = load_client_script(self._client_number)
-            log.info("serving client '%s' (%s call, identified by %s)",
-                      self.client["client_id"], self._direction, self._client_number)
+            # Per-client language config. Defaults preserve the original
+            # Telugu-pinned behaviour for any client that doesn't set these.
+            self._stt_language = self.client.get("stt_language") or self._stt_language
+            self._tts_language = self.client.get("tts_language") or self._tts_language
+            self._follow_caller_language = bool(self.client.get("multilingual"))
+            log.info("serving client '%s' (%s call, identified by %s, stt=%s multilingual=%s)",
+                      self.client["client_id"], self._direction, self._client_number,
+                      self._stt_language, self._follow_caller_language)
 
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         if customer_id and not await check_customer_minutes(customer_id):
@@ -929,9 +1100,44 @@ class CallSession:
         # tries to answer a turn on a closed socket.
         if self._debounce_task:
             self._debounce_task.cancel()
+        if self._time_limit_task:
+            self._time_limit_task.cancel()
         await self.stt.close()
         await self.http.close()
         await self._report()
+
+    async def _enforce_instant_lead_time_limit(self):
+        """"Call Me Now" (website instant-lead) calls only -- cuts the call
+        at INSTANT_LEAD_TIME_LIMIT_SECONDS regardless of where the
+        conversation is. Every other call type (Gundusoodi inbound,
+        scheduled/batch campaigns) is unaffected; see start(), which only
+        launches this task when self._campaign["instant_lead"] is true.
+
+        Speaks a short closing line first rather than dropping the line
+        silently -- a call that just goes dead reads as a failure, not a
+        deliberate wrap-up.
+        """
+        try:
+            await asyncio.sleep(INSTANT_LEAD_TIME_LIMIT_SECONDS)
+        except asyncio.CancelledError:
+            return
+        if self._done.is_set():
+            return
+        log.info("instant-lead call hit the %ss time limit -- wrapping up",
+                  INSTANT_LEAD_TIME_LIMIT_SECONDS)
+        # Cut off whatever the bot is mid-saying so the closing line isn't
+        # queued behind it -- the limit is on wall-clock time, not on the
+        # conversation reaching a natural pause.
+        if self._speak_task and not self._speak_task.done():
+            self._speak_task.cancel()
+            try:
+                await self._speak_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        closing = INSTANT_LEAD_TIME_LIMIT_CLOSING.get(
+            self._tts_language, INSTANT_LEAD_TIME_LIMIT_CLOSING["te"])
+        self.messages.append({"role": "assistant", "content": closing})
+        self._speak_task = asyncio.create_task(self._speak(closing, end_call=True))
 
     def _encode_recording_b64(self) -> str | None:
         """Caller-side audio only (what STT received), as a base64 WAV.
@@ -1076,8 +1282,19 @@ class CallSession:
                             "Read this outbound sales call transcript. Reply "
                             "with exactly three lines, nothing else:\n"
                             "Line 1: a short outcome tag -- one of: interested, "
-                            "not_interested, callback_requested, no_answer, "
-                            "wrong_number, do_not_call, unclear\n"
+                            "maybe, not_interested, callback_requested, "
+                            "no_answer, wrong_number, do_not_call, unclear\n"
+                            "  interested = they clearly want this or asked "
+                            "how to proceed/sign up\n"
+                            "  maybe = genuine but hedged interest -- they "
+                            "asked real questions, didn't reject it, but "
+                            "didn't commit either (\"maybe later\", \"let me "
+                            "think\", \"send me details\"); this is a 50/50, "
+                            "worth a follow-up, not a firm yes\n"
+                            "  unclear = the call itself gave too little to "
+                            "judge interest at all (cut short, garbled, "
+                            "barely any conversation) -- NOT the same as "
+                            "maybe, which requires an actual hedged response\n"
                             "Line 2: the caller's full delivery address if they "
                             "gave one during the call (combine all the parts "
                             "into one line), otherwise the literal word none\n"
