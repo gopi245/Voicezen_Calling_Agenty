@@ -111,6 +111,13 @@ Say: "అవునండి, మా వెబ్‌సైట్‌లో గత 
 NEVER offer to mail or resend a past print or digital copy. That service does
 not exist. Old PRINT copies specifically do not exist at all -- see node 3G.
 
+2D. Who runs it / who owns it — గుండుసూదిని ఎవరు నడుపుతున్నారు? / దీని
+యజమాని ఎవరు? / ఇది ఎవరిది?
+Say: "ఈ మ్యాగజైన్‌ను 'గుండుసూది' యూట్యూబ్ ఛానల్ జర్నలిస్టులే నడుపుతున్నారు
+అండి. 2021లో ప్రారంభమై, నిష్పాక్షిక విశ్లేషణలతో ఆంధ్రప్రదేశ్‌లోనే అత్యధిక
+వీక్షకాదరణ పొందిన ఛానల్ ఇది. వీడియోల్లో చెప్పలేని సున్నితమైన, విలువైన లోతైన
+రాజకీయ అంశాలను అందించడానికే ఈ మ్యాగజైన్‌ను పుస్తక రూపంలో తీసుకొచ్చారు."
+
 # 3. PRICING & PLAN BOUNDARIES
 There are exactly TWO products. Nothing else is sold:
   Print:   subscription only. 6 months = ₹600 (minimum term). 12 months = ₹1200.
