@@ -74,6 +74,13 @@ VOBIZ_AUTH_ID = os.environ["VOBIZ_AUTH_ID"]
 VOBIZ_AUTH_TOKEN = os.environ["VOBIZ_AUTH_TOKEN"]
 VOBIZ_API = "https://api.vobiz.ai/api/v1"
 
+# Carrier-side recording of campaign calls. The file is still being written
+# when the call ends, so it's polled for rather than assumed present; these
+# give it ~20s to appear before falling back to the caller-only capture.
+VOBIZ_RECORD_TIME_LIMIT = 900  # seconds; a hard stop, not an expected length
+VOBIZ_RECORD_POLL_ATTEMPTS = 10
+VOBIZ_RECORD_POLL_DELAY = 2  # seconds between polls
+
 # Last-resort caller ID, used only when a call carries no customer_id we can
 # match to a client (see clients_registry.dial_from_for_customer). Every real
 # client dials out as their OWN number -- routing an outbound call through
@@ -944,6 +951,12 @@ class CallSession:
             if self._campaign.get("instant_lead"):
                 self._time_limit_task = asyncio.create_task(
                     self._enforce_instant_lead_time_limit())
+            # Campaign calls are the ones reviewed afterwards, so they get a
+            # real two-sided recording from Vobiz. Fired off rather than
+            # awaited: a recording that fails to start must not delay the
+            # greeting, and _fetch_vobiz_recording falls back to the
+            # caller-only capture if nothing turns up.
+            asyncio.create_task(self._start_vobiz_recording())
         else:
             self.client, greeting, instructions = load_client_script(self._client_number)
             # Per-client language config. Defaults preserve the original
@@ -1139,12 +1152,104 @@ class CallSession:
         self.messages.append({"role": "assistant", "content": closing})
         self._speak_task = asyncio.create_task(self._speak(closing, end_call=True))
 
+    async def _start_vobiz_recording(self) -> None:
+        """Ask Vobiz to record this call, both sides, at the carrier.
+
+        We can't build a correct two-sided recording ourselves: TTS frames
+        are pushed to Vobiz as fast as the socket takes them, seconds ahead
+        of the caller actually hearing them (see _speak), and a barge-in
+        discards audio we already sent. So our own send timestamps say
+        nothing about when anything was heard. Vobiz records where the two
+        legs actually meet, which is the only place the real timeline
+        exists.
+
+        Stereo, so the caller and the agent land on separate channels and
+        can be told apart when reviewing.
+        """
+        if not self._call_uuid:
+            return
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Call/{self._call_uuid}/Record/",
+                    headers={"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                             "Content-Type": "application/json"},
+                    json={"file_format": "mp3", "record_channel_type": "Stereo",
+                          "time_limit": VOBIZ_RECORD_TIME_LIMIT},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    body = await r.text()
+                    if 200 <= r.status < 300:
+                        log.info("recording started: call=%s", self._call_uuid)
+                    else:
+                        log.warning("recording start failed: HTTP %s %s", r.status, body[:200])
+        except Exception:
+            log.exception("recording start threw")
+
+    async def _fetch_vobiz_recording(self) -> tuple[str, str] | None:
+        """Vobiz's own recording of this call as (base64, format).
+
+        Deleted from Vobiz as soon as it's been pulled down. Vobiz bills
+        recording storage for as long as it holds the file, so keeping our
+        copy in our own bucket and letting theirs go immediately is what
+        stops a per-call storage charge accruing every month. Our copy is
+        what the dashboard plays, and what the 7-day cleanup expires.
+
+        Returns None if the recording never appeared, which leaves the
+        caller-only capture as the fallback.
+        """
+        if not self._call_uuid:
+            return None
+        headers = {"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN}
+        base = f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Recording/"
+        try:
+            async with aiohttp.ClientSession() as s:
+                # The file is still being written when the call ends, so this
+                # waits for it rather than assuming it's there.
+                record = None
+                for attempt in range(VOBIZ_RECORD_POLL_ATTEMPTS):
+                    async with s.get(base, headers=headers,
+                                     params={"call_uuid": self._call_uuid},
+                                     timeout=aiohttp.ClientTimeout(total=10)) as r:
+                        if r.status == 200:
+                            objects = (await r.json()).get("objects") or []
+                            if objects and objects[0].get("recording_url"):
+                                record = objects[0]
+                                break
+                    await asyncio.sleep(VOBIZ_RECORD_POLL_DELAY)
+                if not record:
+                    log.warning("no Vobiz recording for call=%s after %ss",
+                                self._call_uuid,
+                                VOBIZ_RECORD_POLL_ATTEMPTS * VOBIZ_RECORD_POLL_DELAY)
+                    return None
+
+                async with s.get(record["recording_url"], headers=headers,
+                                 timeout=aiohttp.ClientTimeout(total=60)) as r:
+                    if r.status != 200:
+                        log.warning("recording download failed: HTTP %s", r.status)
+                        return None
+                    audio = await r.read()
+
+                recording_id = record.get("recording_id")
+                if recording_id:
+                    async with s.delete(f"{base}{recording_id}/", headers=headers,
+                                        timeout=aiohttp.ClientTimeout(total=10)) as r:
+                        log.info("recording %s pulled (%d bytes) and deleted from Vobiz: HTTP %s",
+                                 recording_id, len(audio), r.status)
+
+                fmt = (record.get("recording_format") or "mp3").lower()
+                return base64.b64encode(audio).decode("ascii"), fmt
+        except Exception:
+            log.exception("fetching Vobiz recording threw")
+            return None
+
     def _encode_recording_b64(self) -> str | None:
         """Caller-side audio only (what STT received), as a base64 WAV.
-        Lets a call actually be listened to afterward instead of only read
-        as a transcript -- a transcript alone couldn't settle whether a real
-        call's odd caller replies were background noise or a genuine
-        misunderstanding."""
+
+        The fallback for when Vobiz's own recording isn't available. It has
+        the agent's replies missing entirely -- silence wherever the bot was
+        speaking -- so it's worth having but not worth preferring.
+        """
         if not self._caller_audio_chunks:
             return None
         buf = io.BytesIO()
@@ -1164,10 +1269,22 @@ class CallSession:
         duration = time.time() - self._started_at
         turns = [m for m in self.messages if m["role"] != "system"]
         transcript = "\n".join(f"[{m['role']}] {m['content']}" for m in turns)
-        recording_b64 = self._encode_recording_b64()
+
+        # Vobiz's recording has both sides; ours has only the caller, with
+        # silence wherever the agent spoke. Prefer theirs, keep ours as the
+        # fallback so a call is never left with no audio at all.
+        recording_format = "wav"
+        recording_b64 = None
+        if self._campaign:
+            fetched = await self._fetch_vobiz_recording()
+            if fetched:
+                recording_b64, recording_format = fetched
+        if recording_b64 is None:
+            recording_b64 = self._encode_recording_b64()
 
         if self._campaign:
-            await self._report_campaign_call(duration, transcript, recording_b64)
+            await self._report_campaign_call(duration, transcript, recording_b64,
+                                             recording_format)
             return
 
         summary = None
@@ -1262,7 +1379,8 @@ class CallSession:
             log.exception("call report failed")
 
     async def _report_campaign_call(self, duration: float, transcript: str,
-                                     recording_b64: str | None = None) -> None:
+                                     recording_b64: str | None = None,
+                                     recording_format: str = "wav") -> None:
         """Campaign calls report to campaign-outcome, not voicezen -- the
         customer is already known directly (campaigns.customer_id), so this
         skips the dialled-number lookup entirely rather than trying to force
@@ -1342,6 +1460,7 @@ class CallSession:
                         "address": address,
                         "language": self._campaign.get("language"),
                         "recording_base64": recording_b64,
+                        "recording_format": recording_format,
                     },
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as r:
