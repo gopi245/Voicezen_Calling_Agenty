@@ -89,6 +89,10 @@ def _flush_queue() -> None:
         lines = QUEUE_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
         return
+    # An empty queue is the normal case now that it's truncated rather than
+    # deleted, so return before rewriting a file that has nothing in it.
+    if not lines:
+        return
 
     still_failing: list[str] = []
     for line in lines:
@@ -99,11 +103,18 @@ def _flush_queue() -> None:
         if _post(item["payload"], timeout=10.0) is None:
             still_failing.append(line)
 
+    # Emptied, never unlinked. In the container this file is a single-file
+    # bind mount, and unlink() on a mount target raises EBUSY -- which the
+    # except below swallowed, so the queue could never clear itself. Every
+    # later successful call re-flushed the same payloads and logged them
+    # again: four stuck calls became nine call_logs rows in one evening, each
+    # replay also re-uploading its recording. Truncating works on a bind
+    # mount; only deleting doesn't.
     try:
         if still_failing:
             QUEUE_FILE.write_text("\n".join(still_failing) + "\n", encoding="utf-8")
         else:
-            QUEUE_FILE.unlink()
+            QUEUE_FILE.write_text("", encoding="utf-8")
     except OSError:
         pass
 
