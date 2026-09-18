@@ -66,6 +66,23 @@ SARVAM_API_KEY = os.environ["SARVAM_API_KEY"]
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "400"))
 
+# ADMIN -- the models the admin dashboard may pick per client, each tried on
+# real prompts on 2026-09-18. A client setting naming anything else is
+# ignored in favour of LLM_MODEL, so a typo can never reach Gemini.
+# "no_thinking": these models reason before answering by default, which cost
+# ~300 extra billed tokens and 1-3s of silence per reply on a phone call;
+# thinkingBudget 0 brings them back to ~1.5s. The Lite models don't think, and
+# their request stays exactly what it was before this existed.
+# (gemini-2.5-* are listed by the API but return 404; gemini-3.8-flash stayed
+# at ~4s even with thinking off.)
+SELECTABLE_LLM_MODELS = {
+    "gemini-3.1-flash-lite": {"no_thinking": False},
+    "gemini-3.5-flash-lite": {"no_thinking": False},
+    "gemini-3.5-flash": {"no_thinking": True},
+    "gemini-3.6-flash": {"no_thinking": True},
+    "gemini-3.7-flash": {"no_thinking": True},
+}
+
 # Public wss:// URL for this service (sslip.io -- no DNS setup, Caddy issues
 # a real cert for it automatically). Set once the Caddy route is live.
 PUBLIC_WSS_URL = os.getenv("PUBLIC_WSS_URL", "wss://vobiz-native.185-199-52-73.sslip.io/media")
@@ -677,7 +694,25 @@ RAYA_LANGUAGES = {"hi", "mr", "te", "kn", "bn", "as", "en-us", "en-in",
                   "gu", "en", "ml", "ne", "ta", "pa"}
 
 
-def resolve_voice(language: str | None) -> tuple[str, str]:
+# ADMIN -- voices the admin dashboard may pick per client, keyed by id with
+# the Raya language each one speaks (all "standard" model, all tried on
+# 2026-09-18). A chosen voice is used only for its own language, so it can
+# never be paired with a language it doesn't speak.
+SELECTABLE_VOICES = {
+    "25a7c7d9-57b3-488a-a880-33edf6642902": "te",     # Tanvi (default)
+    "18897ed3-e3a8-46e0-ad0e-a176bcb6ceee": "te",     # Karthik
+    "e39f7165-85e0-4bd8-b853-cb89c7dbd1b7": "te",     # Divya
+    "43bebf06-bf02-4b39-8358-e7469bda0c0e": "te",     # Abirami Te
+    "edf1b4a5-479c-4d85-885c-54c21a21beb5": "te",     # Anjura Te
+    "0f24fb66-e495-4781-9e84-1224aa7dacde": "en-in",  # Nayra (default)
+    "21e4f0f5-e2b3-40bc-9d9c-c6aecb87160a": "en-in",  # Mansi
+    "4fc34582-f0e0-418d-8d0b-2738637d9229": "en-in",  # Aanya
+    "bae3d3fe-64f9-4d2a-80b2-607ddff23528": "en-in",  # Roger
+}
+SELECTABLE_SPEEDS = (0.8, 0.9, 1.0, 1.1, 1.2)
+
+
+def resolve_voice(language: str | None, overrides: dict | None = None) -> tuple[str, str]:
     """(voice_id, language) for Raya -- resolved together, never separately.
 
     They are one decision, not two: a voice belongs to exactly one language,
@@ -695,13 +730,17 @@ def resolve_voice(language: str | None) -> tuple[str, str]:
     # Any flavour of English becomes Indian English -- these are Indian
     # business callers, and "en-in" is the tag Raya pairs with that voice.
     tag = "en-in" if base == "en" else base
+    chosen = (overrides or {}).get(base)
+    if chosen and SELECTABLE_VOICES.get(chosen) == tag:
+        return chosen, tag
     voice = RAYA_VOICES.get(base)
     if not voice or tag not in RAYA_LANGUAGES:
         return RAYA_VOICE_ID, DEFAULT_TTS_LANGUAGE
     return voice, tag
 
 
-async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te"):
+async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te",
+                     voice_overrides: dict | None = None, speed: float | None = None):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
     Same endpoint and F32LE->S16LE conversion as agent/tts_raya.py; ported here
@@ -718,9 +757,12 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     speaker to read Hindi gives Telugu pronunciation of Hindi text at best.
     RAYA_VOICES maps each language to a voice that actually speaks it.
     """
-    voice_id, raya_lang = resolve_voice(language)
+    voice_id, raya_lang = resolve_voice(language, voice_overrides)
+    rate = speed if speed in SELECTABLE_SPEEDS else 1
+    # ADMIN -- true only when an admin-chosen voice or speed is in play.
+    custom = voice_id != resolve_voice(language)[0] or rate != 1
     body = {"text": text, "voice_id": voice_id, "model": "standard",
-            "language": raya_lang, "sample_rate": TTS_SAMPLE_RATE, "speed": 1}
+            "language": raya_lang, "sample_rate": TTS_SAMPLE_RATE, "speed": rate}
     async with session.post(
         "https://hub.getraya.app/v1/text-to-speech/stream",
         headers={"X-API-Key": RAYA_API_KEY, "Content-Type": "application/json",
@@ -729,6 +771,14 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     ) as r:
         if r.status != 200:
             body_text = await r.text()
+            if custom:
+                # A chosen voice or speed Raya won't take must not become
+                # dead air: say this turn with the default voice instead.
+                log.error("Raya rejected the chosen voice/speed (HTTP %s %s) -- using the default voice",
+                          r.status, body_text[:120])
+                async for chunk in synthesize(session, text, language):
+                    yield chunk
+                return
             raise RuntimeError(f"Raya TTS failed: HTTP {r.status} {body_text[:200]}")
         async for line in r.content:
             line = line.strip()
@@ -754,7 +804,21 @@ def _f32le_to_s16le(raw: bytes) -> bytes:
 
 # ---------------------------------------------------------------- Gemini LLM
 
-def llm_reply(messages: list[dict], attempts: int = 3) -> str:
+def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None) -> str:
+    """One reply from Gemini. `model` is an admin-chosen model for this
+    client; if it isn't one of SELECTABLE_LLM_MODELS, or it fails, the reply
+    comes from LLM_MODEL instead -- a bad setting costs one slow turn, never
+    a silent call."""
+    chosen = model if model in SELECTABLE_LLM_MODELS else LLM_MODEL
+    if chosen != LLM_MODEL:
+        try:
+            return _gemini_reply(messages, chosen, attempts=2)
+        except Exception:
+            log.exception("chosen model %s failed -- falling back to %s", chosen, LLM_MODEL)
+    return _gemini_reply(messages, LLM_MODEL, attempts)
+
+
+def _gemini_reply(messages: list[dict], model: str, attempts: int) -> str:
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     contents = [
         {"role": "model" if m["role"] == "assistant" else "user",
@@ -766,11 +830,13 @@ def llm_reply(messages: list[dict], attempts: int = 3) -> str:
         "contents": contents,
         "generationConfig": {"maxOutputTokens": LLM_MAX_TOKENS, "temperature": 0.2},
     }
+    if SELECTABLE_LLM_MODELS.get(model, {}).get("no_thinking"):
+        body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
     last = ""
     for i in range(attempts):
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{LLM_MODEL}:generateContent?key={GOOGLE_API_KEY}",
+            f"{model}:generateContent?key={GOOGLE_API_KEY}",
             json=body, timeout=30)
         if r.status_code != 200:
             last = f"HTTP {r.status_code}: {r.text[:200]}"
@@ -782,7 +848,7 @@ def llm_reply(messages: list[dict], attempts: int = 3) -> str:
         if text:
             return text
         last = f"empty content (finishReason={cand.get('finishReason')})"
-    raise RuntimeError(f"{LLM_MODEL} failed -- {last}")
+    raise RuntimeError(f"{model} failed -- {last}")
 
 
 async def check_customer_minutes(customer_id: int) -> bool:
@@ -827,9 +893,12 @@ AGENT_CONFIG_URL = (
 )
 
 
-async def fetch_db_script(customer_id: int | None, caller_number: str | None):
+async def fetch_agent_config(customer_id: int | None, caller_number: str | None) -> dict:
+    """{"script": (greeting, instructions, label) or None, "ai": settings dict
+    or None}. None for either means "as in code" -- also the answer to every
+    failure."""
     if not AGENT_CONFIG_URL or not VOICE_AGENT_SECRET or not customer_id:
-        return None
+        return {"script": None, "ai": None}
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
@@ -841,21 +910,31 @@ async def fetch_db_script(customer_id: int | None, caller_number: str | None):
                     "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
                 },
                 json={"customer_id": customer_id, "caller_number": caller_number or ""},
-                # Short on purpose: this runs alongside the minutes check
-                # before the greeting, so it must never hold the caller up.
-                timeout=aiohttp.ClientTimeout(total=2.5),
+                # Runs alongside the minutes check, so a warm answer (0.2-0.9s
+                # measured) adds no wait. 5s rather than less because a cold
+                # function took over 2.5s to wake on 2026-09-18, and once a
+                # client is on a saved script, timing out would quietly serve
+                # the code script instead.
+                timeout=aiohttp.ClientTimeout(total=5),
             ) as r:
                 if r.status != 200:
                     log.error("agent-config failed: HTTP %s -- using the script file", r.status)
-                    return None
+                    return {"script": None, "ai": None}
                 data = await r.json()
     except Exception:
         log.exception("agent-config request failed -- using the script file")
-        return None
+        return {"script": None, "ai": None}
+    script = None
     greeting, instructions = data.get("greeting"), data.get("instructions")
-    if data.get("source") != "db" or not greeting or not instructions:
-        return None
-    return greeting, instructions, f"db v{data.get('version')} ({data.get('mode')})"
+    if data.get("source") == "db" and greeting and instructions:
+        script = (greeting, instructions, f"db v{data.get('version')} ({data.get('mode')})")
+    ai = data.get("ai") if isinstance(data.get("ai"), dict) else None
+    return {"script": script, "ai": ai}
+
+
+# ADMIN -- the language choices the admin dashboard offers. "auto" follows
+# the caller per utterance, as VoiceZen's line does from clients_registry.
+FIXED_LANGUAGES = {"te-IN": "te", "en-IN": "en", "hi-IN": "hi"}
 
 
 # ---------------------------------------------------------------- call session
@@ -912,6 +991,36 @@ class CallSession:
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
         self._time_limit_task: asyncio.Task | None = None
+        # ADMIN -- per-client AI settings from the admin dashboard. None means
+        # the server-wide default, exactly as before those settings existed.
+        self._llm_model: str | None = None
+        self._voice_overrides: dict | None = None
+        self._tts_speed: float | None = None
+
+    def _apply_ai_settings(self, ai: dict) -> None:
+        """Admin-chosen model, voices, speed and language for this call.
+        Anything missing or unrecognised keeps the value from the code; the
+        model and voices are checked again against their allow-lists where
+        they're used."""
+        model = ai.get("llm_model")
+        if model in SELECTABLE_LLM_MODELS:
+            self._llm_model = model
+        voices = ai.get("voices")
+        if isinstance(voices, dict):
+            self._voice_overrides = {k: v for k, v in voices.items() if v in SELECTABLE_VOICES}
+        if ai.get("speed") in SELECTABLE_SPEEDS:
+            self._tts_speed = ai["speed"]
+        language = ai.get("language")
+        if language == "auto":
+            self._stt_language = "unknown"
+            self._follow_caller_language = True
+        elif language in FIXED_LANGUAGES:
+            self._stt_language = language
+            self._tts_language = FIXED_LANGUAGES[language]
+            self._follow_caller_language = False
+        log.info("ai settings: model=%s voices=%s speed=%s stt=%s multilingual=%s",
+                 self._llm_model or LLM_MODEL, self._voice_overrides, self._tts_speed or 1,
+                 self._stt_language, self._follow_caller_language)
 
     def _on_detected_language(self, code: str) -> None:
         """Sarvam reported which language the caller just spoke.
@@ -1014,14 +1123,14 @@ class CallSession:
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         # ADMIN -- asked in parallel with the minutes check below, so it adds
         # no wait before the greeting. Campaign calls keep their own script.
-        db_script_task = None
+        config_task = None
         if not self._campaign:
             other_party = self._from_number if self._direction != "outbound" else self._to_number
-            db_script_task = asyncio.create_task(fetch_db_script(customer_id, _to_e164(other_party)))
+            config_task = asyncio.create_task(fetch_agent_config(customer_id, _to_e164(other_party)))
         if customer_id and not await check_customer_minutes(customer_id):
             log.warning("call blocked: customer %s has no minutes remaining", customer_id)
-            if db_script_task is not None:
-                db_script_task.cancel()
+            if config_task is not None:
+                config_task.cancel()
             self.messages = [{"role": "system", "content": "(blocked -- out of minutes)"}]
             blocked_message = (
                 "క్షమించండి అండి, ప్రస్తుతం ఈ సర్వీస్ అందుబాటులో లేదు. "
@@ -1031,13 +1140,15 @@ class CallSession:
             self._speak_task = asyncio.create_task(self._speak(blocked_message, end_call=True))
             return
 
-        if db_script_task is not None:
-            db_script = await db_script_task
-            if db_script:
-                greeting, instructions, label = db_script
+        if config_task is not None:
+            config = await config_task
+            if config["script"]:
+                greeting, instructions, label = config["script"]
                 log.info("script for client '%s': %s", self.client["client_id"], label)
             else:
                 log.info("script for client '%s': code (%s)", self.client["client_id"], self.client["prompt_module"])
+            if config["ai"]:
+                self._apply_ai_settings(config["ai"])
 
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
@@ -1107,7 +1218,7 @@ class CallSession:
         async with self._turn_lock:
             self.messages.append({"role": "user", "content": text})
             try:
-                reply = await asyncio.to_thread(llm_reply, self.messages)
+                reply = await asyncio.to_thread(llm_reply, self.messages, 3, self._llm_model)
             except Exception:
                 log.exception("llm failed")
                 return
@@ -1122,7 +1233,8 @@ class CallSession:
         self._checkpoint_n += 1
         name = f"turn-{self._checkpoint_n}"
         try:
-            async for chunk in synthesize(self.http, text, self._tts_language):
+            async for chunk in synthesize(self.http, text, self._tts_language,
+                                          self._voice_overrides, self._tts_speed):
                 # ~20ms frames at 24kHz/16-bit mono = 960 bytes.
                 frame = 960
                 for i in range(0, len(chunk), frame):
