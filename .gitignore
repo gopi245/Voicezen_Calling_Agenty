@@ -29,3 +29,14 @@ __pycache__/
 venv/
 .onboard/
 .sshlibs/
+
+# Campaign exports: real contacts' phone numbers and call transcripts (PII).
+campaign58.json
+campaign58_all.json
+radha*.json
+# Local scratch: test audio, an n8n export from another project, an empty db.
+raya_telugu_test.wav
+sparkapi_capture_wf.json
+wf_db_local.sqlite
+# Per-machine editor settings.
+.claude/settings.local.json
