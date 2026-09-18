@@ -815,6 +815,49 @@ async def check_customer_minutes(customer_id: int) -> bool:
         return True
 
 
+# ADMIN -- which script a call should speak, as set from the admin dashboard.
+# Returns (greeting, instructions, label) only when the dashboard says to use
+# a database version for this call; None means "use the script file", which
+# is also the answer to every failure -- timeout, error, not configured. A
+# problem on the dashboard side can therefore never leave a call without a
+# script: the worst case is exactly the behaviour from before this existed.
+AGENT_CONFIG_URL = (
+    os.getenv("VOICEZEN_URL", "").rstrip("/") + "/functions/v1/agent-config"
+    if os.getenv("VOICEZEN_URL") else ""
+)
+
+
+async def fetch_db_script(customer_id: int | None, caller_number: str | None):
+    if not AGENT_CONFIG_URL or not VOICE_AGENT_SECRET or not customer_id:
+        return None
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                AGENT_CONFIG_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-agent-secret": VOICE_AGENT_SECRET,
+                    "apikey": VOICEZEN_ANON_KEY,
+                    "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                },
+                json={"customer_id": customer_id, "caller_number": caller_number or ""},
+                # Short on purpose: this runs alongside the minutes check
+                # before the greeting, so it must never hold the caller up.
+                timeout=aiohttp.ClientTimeout(total=2.5),
+            ) as r:
+                if r.status != 200:
+                    log.error("agent-config failed: HTTP %s -- using the script file", r.status)
+                    return None
+                data = await r.json()
+    except Exception:
+        log.exception("agent-config request failed -- using the script file")
+        return None
+    greeting, instructions = data.get("greeting"), data.get("instructions")
+    if data.get("source") != "db" or not greeting or not instructions:
+        return None
+    return greeting, instructions, f"db v{data.get('version')} ({data.get('mode')})"
+
+
 # ---------------------------------------------------------------- call session
 
 class CallSession:
@@ -969,8 +1012,16 @@ class CallSession:
                       self._stt_language, self._follow_caller_language)
 
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
+        # ADMIN -- asked in parallel with the minutes check below, so it adds
+        # no wait before the greeting. Campaign calls keep their own script.
+        db_script_task = None
+        if not self._campaign:
+            other_party = self._from_number if self._direction != "outbound" else self._to_number
+            db_script_task = asyncio.create_task(fetch_db_script(customer_id, _to_e164(other_party)))
         if customer_id and not await check_customer_minutes(customer_id):
             log.warning("call blocked: customer %s has no minutes remaining", customer_id)
+            if db_script_task is not None:
+                db_script_task.cancel()
             self.messages = [{"role": "system", "content": "(blocked -- out of minutes)"}]
             blocked_message = (
                 "క్షమించండి అండి, ప్రస్తుతం ఈ సర్వీస్ అందుబాటులో లేదు. "
@@ -979,6 +1030,14 @@ class CallSession:
             self.messages.append({"role": "assistant", "content": blocked_message})
             self._speak_task = asyncio.create_task(self._speak(blocked_message, end_call=True))
             return
+
+        if db_script_task is not None:
+            db_script = await db_script_task
+            if db_script:
+                greeting, instructions, label = db_script
+                log.info("script for client '%s': %s", self.client["client_id"], label)
+            else:
+                log.info("script for client '%s': code (%s)", self.client["client_id"], self.client["prompt_module"])
 
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
