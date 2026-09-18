@@ -508,11 +508,14 @@ async def dial(request: Request):
     # Whose line does this call go out on? An explicit dial_from in the body
     # wins (lets a caller override without a deploy), then the client that
     # owns this campaign's customer_id, then the service-wide default.
-    from_number = (
-        body.get("dial_from")
-        or dial_from_for_customer((campaign or {}).get("customer_id"))
-        or DIAL_FROM_NUMBER
-    )
+    customer_id = (campaign or {}).get("customer_id")
+    from_number = body.get("dial_from") or dial_from_for_customer(customer_id)
+    if not from_number and customer_id:
+        # ADMIN -- a client added from the admin dashboard calls out on its
+        # own number too, not on the service-wide default.
+        found = await lookup_client_in_db(customer_id=customer_id)
+        from_number = found.get("number") if found else None
+    from_number = from_number or DIAL_FROM_NUMBER
 
     payload = {
         "from": from_number,
@@ -932,6 +935,53 @@ async def fetch_agent_config(customer_id: int | None, caller_number: str | None)
     return {"script": script, "ai": ai}
 
 
+async def lookup_client_in_db(number: str | None = None, customer_id: int | None = None) -> dict | None:
+    """ADMIN -- a client added from the admin dashboard, which isn't in
+    clients_registry.py. By dialled number (inbound) or by customer
+    (outbound caller ID). None on no match or any failure, which leaves the
+    caller with exactly the behaviour from before this existed."""
+    if not AGENT_CONFIG_URL or not VOICE_AGENT_SECRET or not (number or customer_id):
+        return None
+    body = {"lookup_number": number} if number else {"lookup_dial_from": True, "customer_id": customer_id}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                AGENT_CONFIG_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-agent-secret": VOICE_AGENT_SECRET,
+                    "apikey": VOICEZEN_ANON_KEY,
+                    "Authorization": f"Bearer {VOICEZEN_ANON_KEY}",
+                },
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                if r.status != 200:
+                    log.error("client lookup failed: HTTP %s", r.status)
+                    return None
+                data = await r.json()
+    except Exception:
+        log.exception("client lookup request failed")
+        return None
+    client = data.get("client")
+    return client if isinstance(client, dict) and client.get("customer_id") else None
+
+
+def db_client_entry(found: dict) -> dict:
+    """A registry-shaped entry for a client that lives only in the database.
+    Telugu-pinned by default like Gundusoodi; the client's AI settings from
+    the admin dashboard (language, voices, model) are applied on top."""
+    return {
+        "client_id": f"customer-{found['customer_id']}",
+        "customer_id": found["customer_id"],
+        "dial_from": found.get("number"),
+        "prompt_module": None,  # its script comes from agent-config
+        "stt_language": "te-IN",
+        "tts_language": "te",
+        "multilingual": False,
+    }
+
+
 # ADMIN -- the language choices the admin dashboard offers. "auto" follows
 # the caller per utterance, as VoiceZen's line does from clients_registry.
 FIXED_LANGUAGES = {"te-IN": "te", "en-IN": "en", "hi-IN": "hi"}
@@ -1110,7 +1160,17 @@ class CallSession:
             # caller-only capture if nothing turns up.
             asyncio.create_task(self._start_vobiz_recording())
         else:
-            self.client, greeting, instructions = load_client_script(self._client_number)
+            # ADMIN -- a number missing from clients_registry.py may belong to
+            # a client added from the admin dashboard. Asked only for unknown
+            # numbers, so Gundusoodi's and VoiceZen's calls never wait on it.
+            found = None
+            if self._client_number and not lookup_client(self._client_number):
+                found = await lookup_client_in_db(number=self._client_number)
+            if found:
+                self.client = db_client_entry(found)
+                greeting = instructions = None  # filled from agent-config below
+            else:
+                self.client, greeting, instructions = load_client_script(self._client_number)
             # Per-client language config. Defaults preserve the original
             # Telugu-pinned behaviour for any client that doesn't set these.
             self._stt_language = self.client.get("stt_language") or self._stt_language
@@ -1145,10 +1205,17 @@ class CallSession:
             if config["script"]:
                 greeting, instructions, label = config["script"]
                 log.info("script for client '%s': %s", self.client["client_id"], label)
-            else:
+            elif self.client.get("prompt_module"):
                 log.info("script for client '%s': code (%s)", self.client["client_id"], self.client["prompt_module"])
             if config["ai"]:
                 self._apply_ai_settings(config["ai"])
+
+        if greeting is None or instructions is None:
+            # A database-only client whose script couldn't be loaded. Speaking
+            # the fallback script beats a silent line -- the same trade-off
+            # load_client_script makes for an unknown number.
+            log.error("no script for client '%s' -- using the fallback script", self.client["client_id"])
+            _, greeting, instructions = load_client_script(None)
 
         self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
 
