@@ -510,11 +510,13 @@ async def dial(request: Request):
     # owns this campaign's customer_id, then the service-wide default.
     customer_id = (campaign or {}).get("customer_id")
     from_number = body.get("dial_from") or dial_from_for_customer(customer_id)
-    if not from_number and customer_id:
+    auth_id, auth_token = VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN
+    if not dial_from_for_customer(customer_id) and customer_id:
         # ADMIN -- a client added from the admin dashboard calls out on its
-        # own number too, not on the service-wide default.
+        # own number, and from its own Vobiz account when it has one.
         found = await lookup_client_in_db(customer_id=customer_id)
-        from_number = found.get("number") if found else None
+        from_number = from_number or (found.get("number") if found else None)
+        auth_id, auth_token = vobiz_auth(found)
     from_number = from_number or DIAL_FROM_NUMBER
 
     payload = {
@@ -529,8 +531,8 @@ async def dial(request: Request):
     }
     async with aiohttp.ClientSession() as s:
         async with s.post(
-            f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Call/",
-            headers={"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+            f"{VOBIZ_API}/Account/{auth_id}/Call/",
+            headers={"X-Auth-ID": auth_id, "X-Auth-Token": auth_token,
                      "Content-Type": "application/json"},
             json=payload, timeout=aiohttp.ClientTimeout(total=15),
         ) as r:
@@ -967,6 +969,15 @@ async def lookup_client_in_db(number: str | None = None, customer_id: int | None
     return client if isinstance(client, dict) and client.get("customer_id") else None
 
 
+def vobiz_auth(found: dict | None) -> tuple[str, str]:
+    """ADMIN -- (auth_id, auth_token) for a client from lookup_client_in_db:
+    their own Vobiz account if they have one, else the main account."""
+    own = (found or {}).get("vobiz") or {}
+    if own.get("auth_id") and own.get("auth_token"):
+        return own["auth_id"], own["auth_token"]
+    return VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN
+
+
 def db_client_entry(found: dict) -> dict:
     """A registry-shaped entry for a client that lives only in the database.
     Telugu-pinned by default like Gundusoodi; the client's AI settings from
@@ -1046,6 +1057,9 @@ class CallSession:
         self._llm_model: str | None = None
         self._voice_overrides: dict | None = None
         self._tts_speed: float | None = None
+        # ADMIN -- the Vobiz account this call is on, for recording it: the
+        # main account unless the client has their own (set in start()).
+        self._vobiz_auth: tuple[str, str] = (VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN)
 
     def _apply_ai_settings(self, ai: dict) -> None:
         """Admin-chosen model, voices, speed and language for this call.
@@ -1158,6 +1172,11 @@ class CallSession:
             # awaited: a recording that fails to start must not delay the
             # greeting, and _fetch_vobiz_recording falls back to the
             # caller-only capture if nothing turns up.
+            # ADMIN -- a campaign for a client on their own Vobiz account is
+            # recorded on that account; registry clients never wait on this.
+            campaign_customer = self._campaign.get("customer_id")
+            if campaign_customer and not dial_from_for_customer(campaign_customer):
+                self._vobiz_auth = vobiz_auth(await lookup_client_in_db(customer_id=campaign_customer))
             asyncio.create_task(self._start_vobiz_recording())
         else:
             # ADMIN -- a number missing from clients_registry.py may belong to
@@ -1168,6 +1187,7 @@ class CallSession:
                 found = await lookup_client_in_db(number=self._client_number)
             if found:
                 self.client = db_client_entry(found)
+                self._vobiz_auth = vobiz_auth(found)
                 greeting = instructions = None  # filled from agent-config below
             else:
                 self.client, greeting, instructions = load_client_script(self._client_number)
@@ -1406,11 +1426,12 @@ class CallSession:
         """
         if not self._call_uuid:
             return
+        auth_id, auth_token = self._vobiz_auth
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(
-                    f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Call/{self._call_uuid}/Record/",
-                    headers={"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                    f"{VOBIZ_API}/Account/{auth_id}/Call/{self._call_uuid}/Record/",
+                    headers={"X-Auth-ID": auth_id, "X-Auth-Token": auth_token,
                              "Content-Type": "application/json"},
                     json={"file_format": "mp3", "record_channel_type": "Stereo",
                           "time_limit": VOBIZ_RECORD_TIME_LIMIT},
@@ -1438,8 +1459,9 @@ class CallSession:
         """
         if not self._call_uuid:
             return None
-        headers = {"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN}
-        base = f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Recording/"
+        auth_id, auth_token = self._vobiz_auth
+        headers = {"X-Auth-ID": auth_id, "X-Auth-Token": auth_token}
+        base = f"{VOBIZ_API}/Account/{auth_id}/Recording/"
         try:
             async with aiohttp.ClientSession() as s:
                 # The file is still being written when the call ends, so this
