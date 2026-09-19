@@ -1575,7 +1575,10 @@ class CallSession:
                             '  "delivery_complaint": true if they reported this month\'s '
                             "magazine not arriving, else false\n"
                             '  "address_change": true if an existing subscriber asked to '
-                            "change their address, else false"
+                            "change their address, else false\n"
+                            '  "interested_in_magazine": true if the caller asked about the '
+                            "magazine, its plans or prices, or said they want it -- even if "
+                            "they gave no address -- else false"
                         )},
                         {"role": "user", "content": transcript[:12000]},
                     ],
@@ -1613,6 +1616,9 @@ class CallSession:
                         "pincode": parsed.get("pincode"),
                     },
                     "nodes_visited": nodes_visited,
+                    # Asked about the magazine or its prices without ordering:
+                    # post-call-whatsapp sends these callers the plans offer.
+                    "interested_in_magazine": bool(parsed.get("interested_in_magazine")),
                 }
             except Exception:
                 log.exception("call summary/extraction failed -- reporting without one")
