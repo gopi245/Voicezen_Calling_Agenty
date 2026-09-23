@@ -260,7 +260,7 @@ MIN_BARGE_IN_MS = float(os.getenv("MIN_BARGE_IN_MS", "350"))
 BARGE_IN_CONFIRM_S = float(os.getenv("BARGE_IN_CONFIRM_S", "1.0"))
 # VOICEZEN TEST -- how long to wait when the caller trails off on "అంటే..."
 # before answering what they did say. See _ends_mid_thought.
-TRAILING_CONNECTOR_WAIT_S = float(os.getenv("TRAILING_CONNECTOR_WAIT_S", "1.5"))
+TRAILING_CONNECTOR_WAIT_S = float(os.getenv("TRAILING_CONNECTOR_WAIT_S", "1.0"))
 
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
@@ -353,7 +353,15 @@ _CONNECTOR_WORDS = {
 
 def _ends_mid_thought(text: str) -> bool:
     words = _words(text)
-    return bool(words) and words[-1] in _CONNECTOR_WORDS and not text.rstrip().endswith("?")
+    if not words or text.rstrip().endswith("?"):
+        return False
+    if words[-1] in _CONNECTOR_WORDS:
+        return True
+    # Call 972: "మా బిజినెస్" -- pause -- "కస్టమర్ కేర్ అండి." Sarvam ends a
+    # finished sentence with punctuation; one or two bare words without it
+    # are usually a phrase still in progress. Acknowledgements are exempt.
+    return (len(words) <= 2 and not text.rstrip().endswith((".", "!", chr(0x0964)))
+            and not _is_backchannel(text))
 
 
 def _is_minor(text: str) -> bool:
@@ -2069,10 +2077,11 @@ class CallSession:
                 "same words. If they didn't answer it, ask it differently or "
                 "move on."
                 "\n- Don't explain VoiceZen again unless they ask."
-                "\n- When asked what VoiceZen is, answer in ONE sentence, not a "
-                "feature list, e.g. \"VoiceZen అంటే మీ business కి AI assistant "
-                "అండి -- మీరు ఫోన్ ఎత్తలేకపోయినా అది మాట్లాడి, details మీకు "
-                "WhatsApp లో పంపిస్తుంది.\""
+                "\n- When asked what VoiceZen is, say exactly this (the one "
+                "reply allowed to be longer than 20 words): \"VoiceZen మీ "
+                "business calls కి AI agent తో answer చేస్తుంది అండి. Telugu "
+                "లోనూ English లోనూ మాట్లాడుతుంది, orders తీసుకుంటుంది, address "
+                "collect చేస్తుంది, ఆ details మీకు WhatsApp లో పంపిస్తుంది.\""
                 "\n\nPricing: you still must not state any price, rate or number "
                 "-- you don't have them. But don't dodge, and never say you "
                 "don't know the rates. Say it the way a salesperson would, e.g. "
