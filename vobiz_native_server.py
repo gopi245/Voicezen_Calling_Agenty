@@ -976,7 +976,8 @@ def _mix_into(track: bytearray, offset: int, pcm: bytes) -> None:
     track[offset:end] = a.tobytes()
 
 async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te",
-                     voice_overrides: dict | None = None, speed: float | None = None):
+                     voice_overrides: dict | None = None, speed: float | None = None,
+                     legacy: bool = False):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
     Same endpoint and F32LE->S16LE conversion as agent/tts_raya.py; ported here
@@ -994,8 +995,12 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     RAYA_VOICES maps each language to a voice that actually speaks it.
     """
     # The script decides the voice; see voice_language_for.
-    language = voice_language_for(text, language)
-    text = say_as_spoken(text, language)
+    # VOICEZEN TEST -- both are Sep-2026 additions and only run for VoiceZen;
+    # every other client speaks the requested language and raw text exactly
+    # as it did before either existed.
+    if not legacy:
+        language = voice_language_for(text, language)
+        text = say_as_spoken(text, language)
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
     rate = speed if speed in SELECTABLE_SPEEDS else 1
     # ADMIN -- true only when an admin-chosen voice or speed is in play.
@@ -1466,6 +1471,14 @@ class CallSession:
         # Only a multilingual client lets the caller's own language steer the
         # reply voice; a pinned line keeps whatever it was configured with.
         self._follow_caller_language = False
+        # VOICEZEN TEST -- everything added for the Sep 2026 latency/audio
+        # work (Groq, the shorter debounce, the barge-in guard, the
+        # pronunciation table, voice_language_for) is gated on this and only
+        # runs for VoiceZen. Every other client, including Gundusoodi, keeps
+        # exactly its pre-Sep-2026 behaviour until this is proven out and the
+        # gate is deliberately widened. Defaults True (old behaviour) until
+        # start() identifies the call as VoiceZen's.
+        self._legacy_engine = True
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1618,6 +1631,11 @@ class CallSession:
                       self.client["client_id"], self._direction, self._client_number,
                       self._stt_language, self._follow_caller_language)
 
+        # VOICEZEN TEST -- see the flag's definition in __init__. Campaign and
+        # DB-registry calls have no client_id here and stay on the legacy
+        # engine along with everyone but VoiceZen, until this is widened on
+        # purpose.
+        self._legacy_engine = not (self.client and self.client.get("client_id") == "voicezen")
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         # ADMIN -- asked in parallel with the minutes check below, so it adds
         # no wait before the greeting. Campaign calls keep their own script.
@@ -1682,7 +1700,10 @@ class CallSession:
         # call-setup noise, not the caller. MIN_BARGE_IN_MS is how early
         # is too early; anything past it is a real interruption, same as
         # before.
-        if self._playback_started_at is not None:
+        # VOICEZEN TEST -- every client but VoiceZen keeps the original
+        # behaviour: any speech_start while playing is treated as a real
+        # barge-in, no minimum.
+        if not self._legacy_engine and self._playback_started_at is not None:
             elapsed_ms = (time.time() - self._playback_started_at) * 1000
             if elapsed_ms < MIN_BARGE_IN_MS:
                 log.info('barge-in ignored: %.0fms into playback, too early to be real speech', elapsed_ms)
@@ -1721,8 +1742,11 @@ class CallSession:
         self._debounce_task = asyncio.create_task(self._flush_turn_after_debounce())
 
     async def _flush_turn_after_debounce(self):
+        # VOICEZEN TEST -- 0.9s is the original, pre-Sep-2026 debounce; every
+        # client but VoiceZen still gets it.
+        debounce_s = TURN_DEBOUNCE_S if not self._legacy_engine else 0.9
         try:
-            await asyncio.sleep(TURN_DEBOUNCE_S)
+            await asyncio.sleep(debounce_s)
         except asyncio.CancelledError:
             return  # more speech arrived; a newer timer owns the turn
         text = " ".join(self._pending).strip()
@@ -1732,7 +1756,13 @@ class CallSession:
         # A separate task from here on: once the wait is over the turn
         # is committed, and a fragment arriving moments later must not be
         # able to cancel a reply already being generated or spoken.
-        asyncio.create_task(self._handle_turn(text))
+        # VOICEZEN TEST -- every client but VoiceZen stays on the original,
+        # cancellable inline call, including the drop-on-late-fragment bug
+        # that fix addressed, until Gundusoodhi is explicitly moved onto it.
+        if self._legacy_engine:
+            await self._handle_turn(text)
+        else:
+            asyncio.create_task(self._handle_turn(text))
 
     async def _handle_turn(self, text: str):
         # user_speech_end / stt_transcript_ready. first_fragment_at is the
@@ -1750,7 +1780,7 @@ class CallSession:
             "TIMING turn stt_transcript_ready=%s speech_to_ready=%s debounce=%.2fs",
             f'{stt_ready_after:.2f}s' if stt_ready_after is not None else 'n/a',
             f'{end_to_ready:.2f}s' if end_to_ready is not None else 'n/a',
-            TURN_DEBOUNCE_S,
+            TURN_DEBOUNCE_S if not self._legacy_engine else 0.9,
         )
         log.info("caller: %s", text)
         async with self._turn_lock:
@@ -1792,8 +1822,11 @@ class CallSession:
         # One task does the speaking, in order, while this one keeps reading
         # from the model -- that overlap is the whole point.
         self._speak_task = asyncio.create_task(self._speak_queue(queue))
+        # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
+        # client streams from Gemini exactly as before Groq existed.
+        stream = (llm_stream if not self._legacy_engine else gemini_stream)
         try:
-            async for piece in llm_stream(self.http, self.messages, model):
+            async for piece in stream(self.http, self.messages, model):
                 full += piece
                 if buffer == '' and full == piece:
                     log.info("TIMING turn llm_first_token=%.2fs after transcript",
@@ -1850,7 +1883,8 @@ class CallSession:
                     end_call = True
                     break
                 async for chunk in synthesize(self.http, item, self._tts_language,
-                                              self._voice_overrides, self._tts_speed):
+                                              self._voice_overrides, self._tts_speed,
+                                              legacy=self._legacy_engine):
                     self._collect_bot_audio(chunk)
                     if self._transcript_at is not None:
                         now = time.time()
@@ -1932,7 +1966,8 @@ class CallSession:
         name = f"turn-{self._checkpoint_n}"
         try:
             async for chunk in synthesize(self.http, text, self._tts_language,
-                                          self._voice_overrides, self._tts_speed):
+                                          self._voice_overrides, self._tts_speed,
+                                          legacy=self._legacy_engine):
                 self._collect_bot_audio(chunk)
                 # ~20ms frames at 24kHz/16-bit mono = 960 bytes.
                 frame = 960
