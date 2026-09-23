@@ -37,6 +37,7 @@ import sys
 import time
 import uuid
 import wave
+from collections import OrderedDict
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -54,6 +55,7 @@ load_dotenv(HERE / ".env")
 import voicezen  # noqa: E402
 from clients_registry import dial_from_for_customer  # noqa: E402
 from clients_registry import lookup as lookup_client  # noqa: E402
+from clients_registry import CLIENTS as CLIENTS_REGISTRY  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -531,6 +533,17 @@ async def answer(request: Request):
             "to": form.get("To"),
             "direction": direction,
         })
+        # VOICEZEN TEST -- the media stream opens ~1.4s after this webhook
+        # (measured on every call), and the greeting used to wait a further
+        # 0.5-3.4s after that for the dashboard settings and minutes check.
+        # Start both now so they're ready when the stream arrives. Same
+        # requests, same arguments as start() would make, so a caller on the
+        # dashboard's test list still gets the test script.
+        if direction == "inbound" and not entry.get("campaign"):
+            client = lookup_client(_to_e164(form.get("To")))
+            if client and client.get("client_id") == "voicezen":
+                entry["prefetch"] = asyncio.create_task(
+                    _prefetch_call_setup(client.get("customer_id"), _to_e164(form.get("From"))))
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -541,6 +554,40 @@ async def answer(request: Request):
     </Stream>
 </Response>"""
     return PlainTextResponse(xml, media_type="application/xml")
+
+
+async def _prefetch_call_setup(customer_id: int | None, caller: str | None) -> tuple[bool, dict]:
+    """(has minutes, agent config) -- what start() otherwise asks for itself."""
+    config_task = asyncio.create_task(fetch_agent_config(customer_id, caller))
+    allowed = await check_customer_minutes(customer_id) if customer_id else True
+    return allowed, await config_task
+
+
+async def _warm_voicezen_greeting():
+    """VOICEZEN TEST -- make the first call after a restart as quick as the
+    rest: generate the greeting audio now, and wake the dashboard functions,
+    which took 3.4s to answer the first call after the 2026-09-23 restart."""
+    try:
+        client, greeting, _ = next(
+            (load_client_script(num) for num, c in CLIENTS_REGISTRY.items() if c.get("client_id") == "voicezen"),
+            (None, None, None))
+        if not client:
+            return
+        await asyncio.gather(
+            fetch_agent_config(client.get("customer_id"), ""),
+            check_customer_minutes(client.get("customer_id")) if client.get("customer_id") else asyncio.sleep(0),
+        )
+        async with aiohttp.ClientSession() as http:
+            async for _ in synthesize(http, greeting, client.get("tts_language") or "te"):
+                pass
+        log.info("voicezen greeting pre-generated")
+    except Exception:
+        log.exception("could not pre-generate the voicezen greeting")
+
+
+@app.on_event("startup")
+async def _on_startup():
+    asyncio.create_task(_warm_voicezen_greeting())
 
 
 async def _report_unanswered_campaign_call(campaign: dict, cause: str | None) -> None:
@@ -1084,9 +1131,43 @@ def _mix_into(track: bytearray, offset: int, pcm: bytes) -> None:
         a[i] = max(-32768, min(32767, a[i] + b[i]))
     track[offset:end] = a.tobytes()
 
+# VOICEZEN TEST -- finished audio for lines said word-for-word again: the
+# greeting on every call, and short stock lines. Measured on real calls,
+# generating the greeting was ~0.4s of the silence before the first word.
+_TTS_CACHE: "OrderedDict[tuple, list[bytes]]" = OrderedDict()
+_TTS_CACHE_MAX = 48
+_TTS_CACHE_MAX_CHARS = 300
+
+
 async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te",
                      voice_overrides: dict | None = None, speed: float | None = None,
                      legacy: bool = False):
+    """_synthesize_raya, with finished audio kept for VoiceZen (see _TTS_CACHE).
+    Only a synthesis that ran to the end is kept, so a reply cut off by a
+    barge-in never leaves half a line in the cache."""
+    if legacy or len(text) > _TTS_CACHE_MAX_CHARS:
+        async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy):
+            yield chunk
+        return
+    key = (text, language, tuple(sorted((voice_overrides or {}).items())), speed)
+    cached = _TTS_CACHE.get(key)
+    if cached is not None:
+        _TTS_CACHE.move_to_end(key)
+        for chunk in cached:
+            yield chunk
+        return
+    chunks: list[bytes] = []
+    async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy):
+        chunks.append(chunk)
+        yield chunk
+    _TTS_CACHE[key] = chunks
+    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
+        _TTS_CACHE.popitem(last=False)
+
+
+async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: str = "te",
+                           voice_overrides: dict | None = None, speed: float | None = None,
+                           legacy: bool = False):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
     Same endpoint and F32LE->S16LE conversion as agent/tts_raya.py; ported here
@@ -1889,13 +1970,26 @@ class CallSession:
         # purpose.
         self._legacy_engine = not (self.client and self.client.get("client_id") == "voicezen")
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
+        # VOICEZEN TEST -- answer() already started these (see there).
+        prefetched = None
+        prefetch = (info or {}).get("prefetch")
+        if prefetch is not None and not self._legacy_engine:
+            try:
+                prefetched = await prefetch
+            except Exception:
+                log.exception("early call setup failed -- asking again")
         # ADMIN -- asked in parallel with the minutes check below, so it adds
         # no wait before the greeting. Campaign calls keep their own script.
         config_task = None
-        if not self._campaign:
-            other_party = self._from_number if self._direction != "outbound" else self._to_number
-            config_task = asyncio.create_task(fetch_agent_config(customer_id, _to_e164(other_party)))
-        if customer_id and not await check_customer_minutes(customer_id):
+        if prefetched is not None:
+            allowed, early_config = prefetched
+            config_task = asyncio.create_task(asyncio.sleep(0, result=early_config))
+        else:
+            if not self._campaign:
+                other_party = self._from_number if self._direction != "outbound" else self._to_number
+                config_task = asyncio.create_task(fetch_agent_config(customer_id, _to_e164(other_party)))
+            allowed = await check_customer_minutes(customer_id) if customer_id else True
+        if not allowed:
             log.warning("call blocked: customer %s has no minutes remaining", customer_id)
             if config_task is not None:
                 config_task.cancel()
@@ -2000,8 +2094,8 @@ class CallSession:
             )
         self.messages = [{"role": "system", "content": instructions}]
 
-        await self.stt.connect(
-            self._stt_language, STT_PROMPT if self._legacy_engine else STT_PROMPT_VOICEZEN)
+        if self._legacy_engine:
+            await self.stt.connect(self._stt_language, STT_PROMPT)
         # Recorded in history immediately, not after _speak() finishes -- a
         # real call showed the bug this avoids: the caller's first reply
         # arrived before this line existed, so Gemini's context had no
@@ -2009,6 +2103,12 @@ class CallSession:
         # answering, because as far as its history showed it hadn't spoken yet.
         self.messages.append({"role": "assistant", "content": greeting})
         self._speak_task = asyncio.create_task(self._speak(greeting))
+        if not self._legacy_engine:
+            # VOICEZEN TEST -- greeting first, then connect speech-to-text
+            # while it plays: nobody answers a greeting they haven't heard.
+            log.info("TIMING call greeting_started=%.2fs after the stream opened",
+                     time.time() - self._started_at)
+            await self.stt.connect(self._stt_language, STT_PROMPT_VOICEZEN)
 
     async def on_media(self, pcm16_b64: str):
         raw = base64.b64decode(pcm16_b64)
