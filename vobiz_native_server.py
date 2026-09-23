@@ -774,10 +774,73 @@ def resolve_voice(language: str | None, overrides: dict | None = None) -> tuple[
 # Only add a word here when the voice genuinely says it wrong. Telugu
 # speakers say 'business', 'demo' and 'agent' in English and expect to hear
 # them that way -- rewriting those would sound stranger than leaving them.
+# Why this table is as long as it is. Raya applies Telugu pronunciation
+# rules to Latin letters, so every English word is a place where the voice
+# stops flowing and starts spelling out. Measured across recent calls:
+# Gundusoodhi's replies contain zero Latin words -- it writes even borrowed
+# words in Telugu script, so it reads fluently -- while VoiceZen's are 38%
+# Latin, which is why the same voice sounds like it is reading off paper on
+# one line and natural on the other.
+#
+# These spellings do not translate anything. A Telugu speaker still hears
+# 'business' and 'demo' -- those words are part of how Telugu is actually
+# spoken. Writing them in Telugu script only tells the voice how to say
+# what it is already saying.
+#
+# Taken from the words the agent actually speaks most, counted from real
+# call transcripts, rather than guessed at.
 _SPOKEN_AS = {
-    'te': {'voicezen': 'వాయిస్‌జెన్', 'gundusoodhi': 'గుండుసూది'},
-    'hi': {'voicezen': 'वॉइसज़ेन'},
-    'ta': {'voicezen': 'வாய்ஸ்ஜென்'},
+    'te': {
+        # names
+        'voicezen': 'వాయిస్‌జెన్',
+        'gundusoodhi': 'గుండుసూది',
+        'whatsapp': 'వాట్సాప్',
+        # what the agent talks about, most-spoken first
+        'assistant': 'అసిస్టెంట్',
+        'business': 'బిజినెస్',
+        'agent': 'ఏజెంట్',
+        'agents': 'ఏజెంట్స్',
+        'ai': 'ఏఐ',
+        'call': 'కాల్',
+        'calls': 'కాల్స్',
+        'calling': 'కాలింగ్',
+        'details': 'డీటెయిల్స్',
+        'demo': 'డెమో',
+        'enquiry': 'ఎంక్వైరీ',
+        'enquiries': 'ఎంక్వైరీస్',
+        'website': 'వెబ్‌సైట్',
+        'lead': 'లీడ్',
+        'leads': 'లీడ్స్',
+        'free': 'ఫ్రీ',
+        'answer': 'ఆన్సర్',
+        'orders': 'ఆర్డర్స్',
+        'order': 'ఆర్డర్',
+        'address': 'అడ్రస్',
+        'collect': 'కలెక్ట్',
+        'team': 'టీమ్',
+        'number': 'నంబర్',
+        'budget': 'బడ్జెట్',
+        'location': 'లొకేషన్',
+        'customer': 'కస్టమర్',
+        'customers': 'కస్టమర్స్',
+        'service': 'సర్వీస్',
+        'support': 'సపోర్ట్',
+        'appointment': 'అపాయింట్‌మెంట్',
+        'booking': 'బుకింగ్',
+        'price': 'ప్రైస్',
+        'tickets': 'టికెట్స్',
+        'timings': 'టైమింగ్స్',
+        'requirement': 'రిక్వైర్‌మెంట్',
+        'requirements': 'రిక్వైర్‌మెంట్స్',
+        'online': 'ఆన్‌లైన్',
+        'link': 'లింక్',
+        'email': 'ఈమెయిల్',
+        'telugu': 'తెలుగు',
+        'english': 'ఇంగ్లీష్',
+        'hello': 'హలో',
+    },
+    'hi': {'voicezen': 'वॉइसज़ेन', 'whatsapp': 'व्हाट्सएप'},
+    'ta': {'voicezen': 'வாய்ஸ்ஜென்', 'whatsapp': 'வாட்ஸ்அப்'},
 }
 
 _BOUNDARY = chr(92) + 'b'
