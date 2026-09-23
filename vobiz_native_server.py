@@ -256,6 +256,9 @@ MIN_BARGE_IN_MS = float(os.getenv("MIN_BARGE_IN_MS", "350"))
 # transcribed well within this; a caller actually interrupting is still
 # talking. See _on_speech_start.
 BARGE_IN_CONFIRM_S = float(os.getenv("BARGE_IN_CONFIRM_S", "1.0"))
+# VOICEZEN TEST -- how long to wait when the caller trails off on "అంటే..."
+# before answering what they did say. See _ends_mid_thought.
+TRAILING_CONNECTOR_WAIT_S = float(os.getenv("TRAILING_CONNECTOR_WAIT_S", "1.5"))
 
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
@@ -274,7 +277,10 @@ STT_PROMPT_VOICEZEN = (
     "వాయిస్ జెన్, VoiceZen, ప్లాన్స్, ప్లాన్, ప్రైసింగ్, ప్రైస్, రేట్లు, ఛార్జెస్, "
     "డెమో, ఏఐ ఏజెంట్, కాలింగ్ ఏజెంట్, బిజినెస్, కాల్స్, లీడ్స్, వాట్సాప్, "
     "ఆర్డర్స్, అపాయింట్‌మెంట్, కాల్‌బ్యాక్, కోచింగ్ సెంటర్, క్లినిక్, "
-    "రెస్టారెంట్, రియల్ ఎస్టేట్, షాప్, నంబర్"
+    "రెస్టారెంట్, రియల్ ఎస్టేట్, షాప్, నంబర్, "
+    # The bot asks coaching centres about exactly these; call 970 heard the
+    # answer as "పచ్చ పాలం... కారు".
+    "అడ్మిషన్స్, అడ్మిషన్, ఫీజు, ఫీజులు, కోర్సులు, బ్యాచ్, స్టూడెంట్స్, పేరెంట్స్, ఎంక్వైరీ"
 )
 
 # The system prompt has no notion of ending a call (that was a LiveKit
@@ -333,6 +339,19 @@ def _is_backchannel(text: str) -> bool:
 def _is_filler(text: str) -> bool:
     words = _words(text)
     return 0 < len(words) <= 2 and all(w in _FILLER_WORDS for w in words)
+
+
+# VOICEZEN TEST -- words a Telugu speaker leads into a thought with and then
+# pauses on ("అంటే..." = "I mean..."). A turn ending on one isn't finished.
+_CONNECTOR_WORDS = {
+    "అంటే", "అది", "అయితే", "ఆ", "మరి", "ఇంకా", "కానీ", "ఎందుకంటే", "ఏంటంటే",
+    "and", "so", "but", "like", "uh", "um", "means",
+}
+
+
+def _ends_mid_thought(text: str) -> bool:
+    words = _words(text)
+    return bool(words) and words[-1] in _CONNECTOR_WORDS and not text.rstrip().endswith("?")
 
 
 def _is_minor(text: str) -> bool:
@@ -1939,7 +1958,45 @@ class CallSession:
                 "plans or pricing, so answer it as a pricing question. More "
                 "generally, if a word sounds close to something VoiceZen-related "
                 "(VoiceZen, plans, price, demo, calls, agent), assume that is "
-                "what they meant rather than calling it off-topic."
+                "what they meant rather than calling it off-topic. But if the "
+                "words still make no sense for what you just asked (e.g. you "
+                "asked about their calls and heard \"పచ్చ పాలం\"), don't build "
+                "on them or guess a new topic -- say you didn't catch it and ask "
+                "again, e.g. \"సారీ అండి, సరిగ్గా వినపడలేదు, ఇంకోసారి చెప్తారా?\""
+                "\n\nSound like a real person on a phone call, not a brochure:"
+                "\n- Keep each reply short: one or two short sentences, under "
+                "about 20 words. Never list more than two features at once."
+                "\n- React to what the caller just said before moving on, and "
+                "vary how you do it (అవునా అండి, అర్థమైంది, ఓ మంచిది అండి...) -- "
+                "don't start every reply with \"సరే అండి\"."
+                "\n- Answer the caller's question first, then ask yours. Ask one "
+                "thing at a time."
+                "\n- Never repeat a sentence or question you already said in the "
+                "same words. If they didn't answer it, ask it differently or "
+                "move on."
+                "\n- Don't explain VoiceZen again unless they ask."
+                "\n- When asked what VoiceZen is, answer in ONE sentence, not a "
+                "feature list, e.g. \"VoiceZen అంటే మీ business కి AI assistant "
+                "అండి -- మీరు ఫోన్ ఎత్తలేకపోయినా అది మాట్లాడి, details మీకు "
+                "WhatsApp లో పంపిస్తుంది.\""
+                "\n\nPricing: you still must not state any price, rate or number "
+                "-- you don't have them. But don't dodge, and never say you "
+                "don't know the rates. Say it the way a salesperson would, e.g. "
+                "\"Price మీకు వచ్చే calls ని బట్టి మారుతుంది అండి, అందుకే మా team "
+                "call చేసి మీకు exact price చెప్తారు. రోజుకి సుమారు ఎన్ని calls "
+                "వస్తాయి?\" If the caller wants the price before anything else, "
+                "respect that: after that one question, skip the rest of the "
+                "qualifying questions (business name etc.) and go straight to "
+                "confirming the callback number. Example:"
+                "\n  Caller: ముందు రేట్ చెప్పండి, తర్వాత చూద్దాం."
+                "\n  You: అర్థమైంది అండి. మీ calls ని బట్టి మా team exact price "
+                "చెప్తారు -- ఇదే number కి call చేయమంటారా?"
+                "\nOnce a caller has asked for the price twice, do not ask for "
+                "their business name or other details at all."
+                "\n\nOnce the caller has confirmed the callback number, stop "
+                "asking questions. Thank them and say the team will call, e.g. "
+                "\"థాంక్స్ అండి, మా team త్వరలో ఇదే number కి call చేస్తారు.\" "
+                "Only ask something else if they bring it up."
             )
         self.messages = [{"role": "system", "content": instructions}]
 
@@ -2058,10 +2115,16 @@ class CallSession:
                     timer.cancel()
                 log.info("ignored %r: filler while the bot is talking", text)
                 return
-            if _is_minor(text) and (generating or talking_left > 1.0):
+            audible_for = (time.time() - self._playback_started_at
+                           if self.playing and self._playback_started_at else 0.0)
+            if _is_minor(text) and talking_left > 1.0 and audible_for > 1.0:
                 # One word or an "ఓకే" with the bot well into a sentence:
                 # listening, or noise the recogniser turned into a word
                 # ("Mom", "माझी", "சரி" on a real call). Keep talking.
+                # Only once the caller has actually been hearing the bot:
+                # a word arriving while the reply is still being prepared is
+                # the caller finishing their own sentence (call 970 lost
+                # "...plans, I want those first" that way).
                 if waiting:
                     timer.cancel()
                 log.info("ignored %r: too short to interrupt the bot", text)
@@ -2080,18 +2143,28 @@ class CallSession:
             self._debounce_task.cancel()
         self._debounce_task = asyncio.create_task(self._flush_turn_after_debounce())
 
-    async def _flush_turn_after_debounce(self):
+    async def _flush_turn_after_debounce(self, extended: bool = False):
         # VOICEZEN TEST -- 0.9s is the original, pre-Sep-2026 debounce; every
         # client but VoiceZen still gets it.
         debounce_s = TURN_DEBOUNCE_S if not self._legacy_engine else 0.9
+        if extended:
+            debounce_s = TRAILING_CONNECTOR_WAIT_S
         try:
             await asyncio.sleep(debounce_s)
         except asyncio.CancelledError:
             return  # more speech arrived; a newer timer owns the turn
         text = " ".join(self._pending).strip()
-        self._pending.clear()
         if not text:
             return
+        if not self._legacy_engine and not extended and _ends_mid_thought(text):
+            # VOICEZEN TEST -- "అంటే..." and a pause to think is not a
+            # question. Call 970 answered a lone "అంటే" and talked over the
+            # rest of the caller's sentence. Wait longer; if nothing more
+            # comes, answer what was said.
+            log.info("waiting for more: %r ends mid-thought", text)
+            self._debounce_task = asyncio.create_task(self._flush_turn_after_debounce(extended=True))
+            return
+        self._pending.clear()
         # A separate task from here on: once the wait is over the turn
         # is committed, and a fragment arriving moments later must not be
         # able to cancel a reply already being generated or spoken.
