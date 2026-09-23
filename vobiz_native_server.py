@@ -1769,13 +1769,22 @@ class CallSession:
         # honest proxy for 'the caller stopped talking' -- it is set the
         # instant Sarvam sends its FIRST final for this turn, before the
         # debounce wait and before any later fragments are merged in.
-        self._transcript_at = time.time()
+        #
+        # transcript_at is a LOCAL value from here on, threaded through to
+        # _stream_turn and _speak_queue as a parameter rather than read back
+        # from a shared self._transcript_at. A real VoiceZen call crashed
+        # (TypeError: float - NoneType) because two turns now overlap (see
+        # the VOICEZEN TEST note above) -- turn B's value was wiped by turn
+        # A's still-running _speak_queue resetting the same shared attribute
+        # to None right before turn B read it back.
+        transcript_at = time.time()
         stt_ready_after = (
-            self._transcript_at - self._first_fragment_at if self._first_fragment_at else None
+            transcript_at - self._first_fragment_at if self._first_fragment_at else None
         )
         end_to_ready = (
-            self._transcript_at - self._speech_seen_at if self._speech_seen_at else None
+            transcript_at - self._speech_seen_at if self._speech_seen_at else None
         )
+        speech_seen_at = self._speech_seen_at
         log.info(
             "TIMING turn stt_transcript_ready=%s speech_to_ready=%s debounce=%.2fs",
             f'{stt_ready_after:.2f}s' if stt_ready_after is not None else 'n/a',
@@ -1790,7 +1799,7 @@ class CallSession:
             # 2.2-2.6s silence went. Falls back to waiting for the whole
             # reply if the stream fails before a word has been spoken.
             try:
-                await self._stream_turn()
+                await self._stream_turn(transcript_at, speech_seen_at)
                 return
             except Exception:
                 log.exception("streaming reply failed -- falling back to a whole reply")
@@ -1805,13 +1814,17 @@ class CallSession:
             log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
             self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call))
 
-    async def _stream_turn(self):
+    async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None):
         """Speaks the reply sentence by sentence, as the model writes it.
 
         Raises before anything is spoken if the stream cannot start, so the
         caller can fall back to the whole-reply path. Once a sentence has
         been said, falling back would repeat it, so a later failure just ends
         the turn with what was already spoken.
+
+        transcript_at/speech_seen_at are this turn's own values, captured by
+        the caller before this turn's _speak_queue task can outlive the
+        _turn_lock and race a later turn over shared instance state.
         """
         model = self._llm_model if self._llm_model in SELECTABLE_LLM_MODELS else LLM_MODEL
         queue: asyncio.Queue = asyncio.Queue()
@@ -1821,7 +1834,8 @@ class CallSession:
 
         # One task does the speaking, in order, while this one keeps reading
         # from the model -- that overlap is the whole point.
-        self._speak_task = asyncio.create_task(self._speak_queue(queue))
+        self._speak_task = asyncio.create_task(
+            self._speak_queue(queue, transcript_at, speech_seen_at))
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
@@ -1830,7 +1844,7 @@ class CallSession:
                 full += piece
                 if buffer == '' and full == piece:
                     log.info("TIMING turn llm_first_token=%.2fs after transcript",
-                             time.time() - self._transcript_at)
+                             time.time() - transcript_at)
                 buffer += piece
                 while True:
                     sentence, buffer = _next_sentence(buffer)
@@ -1863,7 +1877,8 @@ class CallSession:
         # the reply asked for the call to end.
         await queue.put(("END_CALL",) if end_call else None)
 
-    async def _speak_queue(self, queue: "asyncio.Queue"):
+    async def _speak_queue(self, queue: "asyncio.Queue", transcript_at: float,
+                            speech_seen_at: float | None):
         """Synthesises and sends each sentence in turn, until told to stop.
 
         One task for the whole turn, so a barge-in cancelling self._speak_task
@@ -1886,15 +1901,15 @@ class CallSession:
                                               self._voice_overrides, self._tts_speed,
                                               legacy=self._legacy_engine):
                     self._collect_bot_audio(chunk)
-                    if self._transcript_at is not None:
+                    if transcript_at is not None:
                         now = time.time()
                         log.info(
                             "TIMING turn tts_first_chunk_emitted=%.2fs telephony_playback_started=%.2fs total_turnaround=%.2fs",
-                            now - self._transcript_at,
-                            now - self._transcript_at,
-                            now - (self._speech_seen_at or self._transcript_at),
+                            now - transcript_at,
+                            now - transcript_at,
+                            now - (speech_seen_at or transcript_at),
                         )
-                        self._transcript_at = None
+                        transcript_at = None
                     frame = 960
                     for i in range(0, len(chunk), frame):
                         if not self.playing:
