@@ -857,6 +857,106 @@ class SarvamSTT:
             await self._session.close()
 
 
+# VOICEZEN TEST -- Cartesia speech-to-text, for a live comparison on
+# VoiceZen's line only (VOICEZEN_STT_PROVIDER=cartesia; default sarvam).
+# ink-whisper is Cartesia's only model that takes Telugu. It scored far below
+# Sarvam on 30 real caller clips offline (2026-09-23); this exists so that
+# can be heard on a real call, and switched back by removing one setting.
+CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "")
+VOICEZEN_STT_PROVIDER = os.getenv("VOICEZEN_STT_PROVIDER", "sarvam").strip().lower()
+
+
+class CartesiaSTT:
+    """Same interface as SarvamSTT: connect / send_audio / close, with the
+    same three callbacks.
+
+    Cartesia sends no separate "speech started" signal, so the first partial
+    transcript of an utterance stands in for it -- that is what barge-in and
+    the timing logs hang off. Final transcripts go to on_transcript exactly as
+    Sarvam's do, so turn-taking downstream is unchanged.
+    """
+
+    URL = "wss://api.cartesia.ai/stt/websocket"
+    # Cartesia asks for roughly 100 ms per message; Vobiz sends ~20 ms frames.
+    CHUNK_BYTES = STT_SAMPLE_RATE * 2 // 10
+
+    def __init__(self, on_transcript, on_speech_start, on_language=None):
+        self._on_transcript = on_transcript
+        self._on_speech_start = on_speech_start
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._session: aiohttp.ClientSession | None = None
+        self._recv_task: asyncio.Task | None = None
+        self._buf = bytearray()
+        self._in_utterance = False
+
+    async def connect(self, language_code: str = "te-IN", prompt: str | None = None):
+        self._session = aiohttp.ClientSession()
+        lang = (language_code or "te").split("-")[0].lower()
+        if lang in ("", "unknown"):
+            lang = "te"
+        params = {
+            "model": "ink-whisper",
+            "language": lang,
+            "encoding": "pcm_s16le",
+            "sample_rate": str(STT_SAMPLE_RATE),
+            "cartesia_version": "2026-08-14",
+            # A quarter second of silence ends an utterance, matching the
+            # ~0.25 s Sarvam is configured for, so the comparison is fair.
+            "max_silence_duration_secs": "0.25",
+            "min_volume": "0.1",
+        }
+        url = self.URL + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+        self._ws = await self._session.ws_connect(url, headers={"X-API-Key": CARTESIA_API_KEY}, timeout=30)
+        self._recv_task = asyncio.create_task(self._recv_loop())
+        log.info("cartesia stt connected (ink-whisper, %s)", lang)
+
+    async def _recv_loop(self):
+        assert self._ws is not None
+        async for msg in self._ws:
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except Exception:
+                continue
+            kind = data.get("type")
+            if kind == "transcript":
+                text = (data.get("text") or "").strip()
+                if not text:
+                    continue
+                if not data.get("is_final"):
+                    if not self._in_utterance:
+                        self._in_utterance = True
+                        await self._on_speech_start()
+                    continue
+                if not self._in_utterance:
+                    await self._on_speech_start()
+                self._in_utterance = False
+                await self._on_transcript(text)
+            elif kind == "error":
+                log.warning("cartesia stt error: %s", data)
+
+    async def send_audio(self, pcm16_bytes: bytes):
+        if self._ws is None:
+            return
+        self._buf += pcm16_bytes
+        if len(self._buf) < self.CHUNK_BYTES:
+            return
+        chunk, self._buf = bytes(self._buf), bytearray()
+        try:
+            await self._ws.send_bytes(chunk)
+        except Exception:
+            log.warning("cartesia send_audio failed; STT socket likely closed")
+
+    async def close(self):
+        if self._recv_task:
+            self._recv_task.cancel()
+        if self._ws:
+            await self._ws.close()
+        if self._session:
+            await self._session.close()
+
+
 # ---------------------------------------------------------------- Raya TTS
 
 # One voice per language. A Raya voice_id belongs to exactly one language, so
@@ -2119,6 +2219,11 @@ class CallSession:
             # while it plays: nobody answers a greeting they haven't heard.
             log.info("TIMING call greeting_started=%.2fs after the stream opened",
                      time.time() - self._started_at)
+            if VOICEZEN_STT_PROVIDER == "cartesia" and CARTESIA_API_KEY:
+                # Swapped before it ever connects, so no audio reaches the
+                # unused Sarvam client.
+                self.stt = CartesiaSTT(self._on_transcript, self._on_speech_start,
+                                       self._on_detected_language)
             await self.stt.connect(self._stt_language, STT_PROMPT_VOICEZEN)
 
     async def on_media(self, pcm16_b64: str):
