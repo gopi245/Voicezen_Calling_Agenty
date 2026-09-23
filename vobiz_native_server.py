@@ -215,6 +215,12 @@ STT_SAMPLE_RATE = 16000  # Vobiz inbound contentType we request; Sarvam recommen
 # answering a half-sentence, or two replies for one thing the caller said).
 TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.45"))
 
+# A barge-in signal this early into our own playback is line noise, not
+# the caller -- see the note on _playback_started_at. 350ms is well under
+# a normal human reaction/interrupt time, so a genuine early interruption
+# is still honoured; only the call-setup click is filtered out.
+MIN_BARGE_IN_MS = float(os.getenv("MIN_BARGE_IN_MS", "350"))
+
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
 # agent solved the same way -- saaras models accept a config prompt to bias
@@ -1345,6 +1351,14 @@ class CallSession:
         # difference was invisible: it sits between the caller finishing and
         # the transcript arriving, which nothing was recording.
         self._speech_seen_at: float | None = None
+        # When the current playback actually started -- guards the
+        # opening greeting against a false barge-in. A real call showed
+        # exactly this: STT connected, the greeting began playing, and
+        # 173ms later a spurious START_SPEECH signal (almost certainly
+        # line noise from the call just being answered, not the caller)
+        # wiped the whole greeting before a word reached them. Nobody can
+        # physically start talking 173ms after their own call connects.
+        self._playback_started_at: float | None = None
         self._first_fragment_at: float | None = None
         self._transcript_at: float | None = None
         self._call_uuid = None
@@ -1571,6 +1585,16 @@ class CallSession:
         self._speech_seen_at = time.time()
         if not self.playing:
             return
+        # A caller cannot physically begin speaking a few hundred ms into
+        # our own line just connecting -- this early, a VAD trigger is
+        # call-setup noise, not the caller. MIN_BARGE_IN_MS is how early
+        # is too early; anything past it is a real interruption, same as
+        # before.
+        if self._playback_started_at is not None:
+            elapsed_ms = (time.time() - self._playback_started_at) * 1000
+            if elapsed_ms < MIN_BARGE_IN_MS:
+                log.info('barge-in ignored: %.0fms into playback, too early to be real speech', elapsed_ms)
+                return
         log.info("barge-in: clearing playback")
         # clearAudio is the ONLY thing that stops audio already queued inside
         # Vobiz. Cancelling the task just stops us sending more, and by now
@@ -1744,6 +1768,8 @@ class CallSession:
                         self._transcript_at = None
                     frame = 960
                     for i in range(0, len(chunk), frame):
+                        if not self.playing:
+                            self._playback_started_at = time.time()
                         self.playing = True
                         await self._send({
                             "event": "playAudio",
@@ -1819,6 +1845,8 @@ class CallSession:
                     # From the first frame on, the caller is hearing us --
                     # even though we finish SENDING seconds before they finish
                     # HEARING. This stays true until playedStream.
+                    if not self.playing:
+                        self._playback_started_at = time.time()
                     self.playing = True
                     await self._send({
                         "event": "playAudio",
