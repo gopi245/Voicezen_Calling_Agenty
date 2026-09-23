@@ -1509,6 +1509,8 @@ class CallSession:
         # detected twice in a row before the switch happens.
         self._pending_lang_code: str | None = None
         self._pending_lang_count = 0
+        # VOICEZEN TEST -- see the guard in _on_speech_start/_on_transcript.
+        self._ignored_noise_until: float | None = None
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1774,6 +1776,16 @@ class CallSession:
             elapsed_ms = (time.time() - self._playback_started_at) * 1000
             if elapsed_ms < MIN_BARGE_IN_MS:
                 log.info('barge-in ignored: %.0fms into playback, too early to be real speech', elapsed_ms)
+                # VOICEZEN TEST -- a real call showed Sarvam transcribing
+                # this exact same noise burst into text ("Booth.com") a
+                # moment later, and the bot answered it as if the caller had
+                # spoken. Ignoring the barge-in only stopped it from
+                # interrupting playback; it did nothing to stop the
+                # resulting transcript being treated as a real turn. Any
+                # transcript fragment arriving in the same window this noise
+                # was dismissed in is almost certainly the same noise, not
+                # real speech, and is dropped in _on_transcript.
+                self._ignored_noise_until = self._playback_started_at + (MIN_BARGE_IN_MS / 1000)
                 return
         log.info("barge-in: clearing playback")
         # clearAudio is the ONLY thing that stops audio already queued inside
@@ -1800,6 +1812,16 @@ class CallSession:
         """Buffer the transcript and (re)start the debounce timer. Sarvam
         splits one spoken sentence into several finals, so answering each one
         immediately makes the bot reply to fragments and talk over itself."""
+        # VOICEZEN TEST -- only checked at the start of a new turn: a real
+        # call showed the exact noise burst that a too-early barge-in
+        # ignored getting transcribed as text ("Booth.com") a moment later
+        # and answered as if it were real speech. Dropped here rather than
+        # ever entering the pending buffer.
+        if (not self._legacy_engine and not self._pending
+                and self._ignored_noise_until is not None
+                and time.time() < self._ignored_noise_until):
+            log.info("transcript ignored: %r arrived in the same window as dismissed call-setup noise", text)
+            return
         log.info("caller (partial): %s", text)
         if not self._pending:
             self._first_fragment_at = time.time()
