@@ -275,6 +275,25 @@ def _instructions_no_livekit(base_instructions: str) -> str:
     )
 
 
+def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool) -> bool:
+    """True if a reply carrying END_MARKER should actually hang up.
+
+    VOICEZEN TEST -- a real Groq reply attached END_MARKER to a message
+    that was itself still asking a qualifying question ("...మీ పేరు
+    చెప్పగలరా?"), hanging up right after asking for the caller's name
+    instead of waiting for their answer. A reply that ends in a question
+    mark cannot also be a goodbye, so on VoiceZen that contradiction is
+    treated as the marker being wrong, not the call being over -- the
+    question is still spoken either way, only the hangup is skipped.
+    """
+    if not marked:
+        return False
+    if not legacy and spoken.rstrip().endswith("?"):
+        log.warning("bot reply ended in a question but also carried END_CALL -- ignoring the marker")
+        return False
+    return True
+
+
 def load_client_script(dialed_number: str | None):
     """Resolve which client owns this number and load their prompt module.
 
@@ -852,6 +871,11 @@ _SPOKEN_AS = {
         'service': 'సర్వీస్',
         'support': 'సపోర్ట్',
         'appointment': 'అపాయింట్‌మెంట్',
+        'appointments': 'అపాయింట్‌మెంట్స్',
+        'callback': 'కాల్‌బ్యాక్',
+        'callbacks': 'కాల్‌బ్యాక్స్',
+        'pricing': 'ప్రైసింగ్',
+        'confirm': 'కన్ఫర్మ్',
         'booking': 'బుకింగ్',
         'price': 'ప్రైస్',
         'tickets': 'టికెట్స్',
@@ -1852,8 +1876,8 @@ class CallSession:
                 log.exception("llm failed")
                 return
             self.messages.append({"role": "assistant", "content": reply})
-            end_call = END_MARKER in reply
             spoken = reply.replace(END_MARKER, "").strip()
+            end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine)
             log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
             self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call))
 
@@ -1913,9 +1937,9 @@ class CallSession:
             raise RuntimeError("stream produced no text")
 
         self.messages.append({"role": "assistant", "content": full})
-        end_call = END_MARKER in full
-        log.info("bot: %s%s", full.replace(END_MARKER, "").strip(),
-                 "  [END_CALL]" if end_call else "")
+        spoken_full = full.replace(END_MARKER, "").strip()
+        end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine)
+        log.info("bot: %s%s", spoken_full, "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up after it if
         # the reply asked for the call to end.
         await queue.put(("END_CALL",) if end_call else None)
