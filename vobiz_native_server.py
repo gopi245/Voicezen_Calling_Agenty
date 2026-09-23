@@ -346,7 +346,9 @@ def _is_filler(text: str) -> bool:
 # VOICEZEN TEST -- words a Telugu speaker leads into a thought with and then
 # pauses on ("అంటే..." = "I mean..."). A turn ending on one isn't finished.
 _CONNECTOR_WORDS = {
-    "అంటే", "అది", "అయితే", "ఆ", "మరి", "ఇంకా", "కానీ", "ఎందుకంటే", "ఏంటంటే",
+    # Not "ఏంటంటే": callers end questions on it ("వాయిస్ జెన్ అంటే ఏంటంటే",
+    # call 973), so waiting on it added a second to a finished question.
+    "అంటే", "అది", "అయితే", "ఆ", "మరి", "ఇంకా", "కానీ", "ఎందుకంటే",
     "and", "so", "but", "like", "uh", "um", "means",
 }
 
