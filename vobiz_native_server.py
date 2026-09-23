@@ -262,6 +262,16 @@ STT_PROMPT = (
     "వీధి, ఊరు, జిల్లా, రూపాయలు, ఆరు నెలలు, ఏడాది, నెలవారీ, వార్షిక"
 )
 
+# VOICEZEN TEST -- VoiceZen's own vocabulary. Until now VoiceZen calls were
+# biased toward Gundusoodi's magazine words above, and "ప్లాన్స్" (plans)
+# came through as "ప్లాంట్స్" (plants) on three separate real calls.
+STT_PROMPT_VOICEZEN = (
+    "వాయిస్ జెన్, VoiceZen, ప్లాన్స్, ప్లాన్, ప్రైసింగ్, ప్రైస్, రేట్లు, ఛార్జెస్, "
+    "డెమో, ఏఐ ఏజెంట్, కాలింగ్ ఏజెంట్, బిజినెస్, కాల్స్, లీడ్స్, వాట్సాప్, "
+    "ఆర్డర్స్, అపాయింట్‌మెంట్, కాల్‌బ్యాక్, కోచింగ్ సెంటర్, క్లినిక్, "
+    "రెస్టారెంట్, రియల్ ఎస్టేట్, షాప్, నంబర్"
+)
+
 # The system prompt has no notion of ending a call (that was a LiveKit
 # function_tool before). Ask the model to mark it in-band instead.
 END_MARKER = "[[END_CALL]]"
@@ -639,7 +649,7 @@ class SarvamSTT:
         self._session: aiohttp.ClientSession | None = None
         self._recv_task: asyncio.Task | None = None
 
-    async def connect(self, language_code: str = "te-IN"):
+    async def connect(self, language_code: str = "te-IN", prompt: str = STT_PROMPT):
         self._session = aiohttp.ClientSession()
         params = {
             # Pinned, not "unknown" (auto-detect). Two real calls showed
@@ -669,7 +679,7 @@ class SarvamSTT:
         self._ws = await self._session.ws_connect(
             url, headers={"api-subscription-key": SARVAM_API_KEY}, timeout=30)
         # saaras models take a vocabulary prompt as an initial config frame.
-        await self._ws.send_str(json.dumps({"type": "config", "prompt": STT_PROMPT}))
+        await self._ws.send_str(json.dumps({"type": "config", "prompt": prompt}))
         self._recv_task = asyncio.create_task(self._recv_loop())
         log.info("sarvam stt connected")
 
@@ -1875,10 +1885,18 @@ class CallSession:
                 "only greets you (hello, hi, good morning, నమస్కారం), greet "
                 "them back in two or three words and ask how you can help, "
                 "e.g. \"నమస్కారం అండి, చెప్పండి, మీకు ఎలా సహాయం చేయగలను?\""
+                "\n\nThe caller's words reach you through speech recognition, "
+                "which often mishears. \"ప్లాంట్స్\"/\"plants\" is almost always "
+                "\"ప్లాన్స్\"/\"plans\" -- the caller is asking about VoiceZen's "
+                "plans or pricing, so answer it as a pricing question. More "
+                "generally, if a word sounds close to something VoiceZen-related "
+                "(VoiceZen, plans, price, demo, calls, agent), assume that is "
+                "what they meant rather than calling it off-topic."
             )
         self.messages = [{"role": "system", "content": instructions}]
 
-        await self.stt.connect(self._stt_language)
+        await self.stt.connect(
+            self._stt_language, STT_PROMPT if self._legacy_engine else STT_PROMPT_VOICEZEN)
         # Recorded in history immediately, not after _speak() finishes -- a
         # real call showed the bug this avoids: the caller's first reply
         # arrived before this line existed, so Gemini's context had no
