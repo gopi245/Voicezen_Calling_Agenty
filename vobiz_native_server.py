@@ -1479,6 +1479,12 @@ class CallSession:
         # gate is deliberately widened. Defaults True (old behaviour) until
         # start() identifies the call as VoiceZen's.
         self._legacy_engine = True
+        # VOICEZEN TEST -- language-switch stickiness. A single short or
+        # misheard word (Sarvam reported "bn" for a one-word "yes") used to
+        # flip the reply voice immediately; now the same language has to be
+        # detected twice in a row before the switch happens.
+        self._pending_lang_code: str | None = None
+        self._pending_lang_count = 0
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1528,13 +1534,34 @@ class CallSession:
             return
         base = (code or "").split("-")[0].lower()
         if not base or base == self._tts_language:
+            self._pending_lang_code = None
+            self._pending_lang_count = 0
             return
         if base not in RAYA_VOICES:
             # Heard something we have no voice for -- keep the current one
             # rather than falling back to a default mid-conversation.
             return
+        # VOICEZEN TEST -- stickiness: a real call showed Sarvam reporting
+        # "bn" off a single misheard one-word "yes", which used to flip the
+        # voice on the spot. Every client but VoiceZen keeps that original,
+        # immediate-switch behaviour; VoiceZen requires the same language
+        # twice in a row first, so one bad guess can't swing the voice.
+        if self._legacy_engine:
+            log.info("caller language detected: %s (was %s)", base, self._tts_language)
+            self._tts_language = base
+            return
+        if base == self._pending_lang_code:
+            self._pending_lang_count += 1
+        else:
+            self._pending_lang_code = base
+            self._pending_lang_count = 1
+        if self._pending_lang_count < 2:
+            log.info("caller language detected: %s (was %s) -- waiting for a second match before switching",
+                      base, self._tts_language)
+            return
         log.info("caller language detected: %s (was %s)", base, self._tts_language)
         self._tts_language = base
+        self._pending_lang_count = 0
 
     @property
     def _client_number(self) -> str | None:
@@ -1673,7 +1700,23 @@ class CallSession:
             log.error("no script for client '%s' -- using the fallback script", self.client["client_id"])
             _, greeting, instructions = load_client_script(None)
 
-        self.messages = [{"role": "system", "content": _instructions_no_livekit(instructions)}]
+        instructions = _instructions_no_livekit(instructions)
+        # VOICEZEN TEST -- appended here rather than in script_voicezen.py:
+        # this project's call scripts are otherwise off limits. A real call
+        # showed the model mirroring a single mis-transcribed word (Sarvam
+        # wrote a one-word "yes" as Bengali, a misheard "పది" as Tamil) into
+        # a whole reply in that language. This only overrides a one-word,
+        # ambiguous transcript; a caller who actually opens in another
+        # language for a full sentence is still real signal and still
+        # followed, same as before.
+        if not self._legacy_engine:
+            instructions += (
+                "\n\nLanguage: default to replying in Telugu. Only switch to a "
+                "different language if the caller's own message clearly uses "
+                "several words in that language -- a single short or ambiguous "
+                "word is not enough on its own to switch."
+            )
+        self.messages = [{"role": "system", "content": instructions}]
 
         await self.stt.connect(self._stt_language)
         # Recorded in history immediately, not after _speak() finishes -- a
