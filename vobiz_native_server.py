@@ -99,6 +99,9 @@ GROQ_REASONING_EFFORT = os.getenv(
 # keeps the rare slow turn under two seconds. Costs a second request only
 # on the turns that needed it.
 GROQ_HEDGE_AFTER_S = float(os.getenv("GROQ_HEDGE_AFTER_S", "0.7"))
+# VOICEZEN TEST -- set to a Gemini model (e.g. gemini-3.1-flash-lite) to run
+# VoiceZen's replies on it instead of Groq. Unset = Groq, as before.
+VOICEZEN_LLM = os.getenv("VOICEZEN_LLM", "").strip()
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "400"))
 
 # ADMIN -- the models the admin dashboard may pick per client, each tried on
@@ -2597,6 +2600,10 @@ class CallSession:
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
+        # VOICEZEN TEST -- VOICEZEN_LLM names a Gemini model to use for
+        # VoiceZen instead of Groq, without touching LLM_MODEL (Gundusoodi's).
+        if not self._legacy_engine and VOICEZEN_LLM.startswith("gemini"):
+            stream, model = gemini_stream, VOICEZEN_LLM
         # VOICEZEN TEST -- one question per reply, enforced here rather than
         # trusted to the model: call 996 on gpt-oss-120b spoke four questions
         # run together as one 15-second reply. Once a question has been
