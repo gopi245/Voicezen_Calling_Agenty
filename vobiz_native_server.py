@@ -23,6 +23,7 @@ except what that lookup returns.
 """
 from __future__ import annotations
 
+import array
 import asyncio
 import base64
 import importlib
@@ -744,6 +745,61 @@ def resolve_voice(language: str | None, overrides: dict | None = None) -> tuple[
     return voice, tag
 
 
+# ------------------------------------------------- recording both sides
+#
+# The recording used to hold the caller's audio only, so what the agent
+# actually said -- and how it sounded -- was gone the moment the call ended.
+# That made every "it sounded robotic on that call" unanswerable after the
+# fact, and it is the one question a voice product most needs to answer.
+#
+# The two sides arrive at different rates: the phone line gives us 16kHz and
+# Raya returns 24kHz, so the agent's audio is resampled down before it can be
+# mixed into the caller's timeline.
+
+def _resample_24k_to_16k(pcm: bytes) -> bytes:
+    """S16LE mono, 24kHz -> 16kHz."""
+    if not pcm:
+        return b''
+    try:
+        import audioop  # noqa: PLC0415 -- optional, see below
+        converted, _ = audioop.ratecv(pcm, 2, 1, TTS_SAMPLE_RATE, STT_SAMPLE_RATE, None)
+        return converted
+    except Exception:
+        # audioop is gone in Python 3.13. Falling back to plain arithmetic
+        # keeps recordings working through a base-image bump instead of
+        # silently losing the agent's side again.
+        src = array.array('h')
+        src.frombytes(pcm[: len(pcm) // 2 * 2])
+        if not src:
+            return b''
+        ratio = TTS_SAMPLE_RATE / STT_SAMPLE_RATE
+        out = array.array('h', bytes(int(len(src) / ratio) * 2))
+        for i in range(len(out)):
+            out[i] = src[min(int(i * ratio), len(src) - 1)]
+        return out.tobytes()
+
+
+def _mix_into(track: bytearray, offset: int, pcm: bytes) -> None:
+    """Adds `pcm` into `track` at a byte offset, growing it if needed."""
+    if not pcm:
+        return
+    end = offset + len(pcm)
+    if end > len(track):
+        track.extend(bytes(end - len(track)))
+    region = bytes(track[offset:end])
+    try:
+        import audioop  # noqa: PLC0415
+        track[offset:end] = audioop.add(region, pcm, 2)
+        return
+    except Exception:
+        pass
+    a = array.array('h'); a.frombytes(region)
+    b = array.array('h'); b.frombytes(pcm)
+    for i in range(min(len(a), len(b))):
+        # Saturating add: two voices at once must not wrap into noise.
+        a[i] = max(-32768, min(32767, a[i] + b[i]))
+    track[offset:end] = a.tobytes()
+
 async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te",
                      voice_overrides: dict | None = None, speed: float | None = None):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
@@ -821,6 +877,90 @@ def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None)
         except Exception:
             log.exception("chosen model %s failed -- falling back to %s", chosen, LLM_MODEL)
     return _gemini_reply(messages, LLM_MODEL, attempts)
+
+
+# ---------------------------------------------------------- streaming replies
+#
+# The caller hears nothing between finishing their sentence and the agent
+# starting to speak. Measured on real calls that silence was 2.2-2.6 seconds,
+# and the bulk of it -- 1.58s on average -- was waiting for Gemini to finish
+# writing the WHOLE reply before a single word could be synthesised.
+#
+# Nothing about the reply's first sentence depends on its last, so there is no
+# reason to wait. These stream the model's output and hand each finished
+# sentence to the voice as soon as it exists, which cuts the gap to roughly
+# the time the first sentence takes -- about a second, and it feels like a
+# conversation instead of a pause.
+#
+# The non-streaming path below stays exactly as it was, and is still what a
+# failure falls back to: a slow reply is bad, a silent call is worse.
+
+# A sentence ends here. Telugu uses the Latin full stop and question mark, and
+# the Devanagari danda turns up in mixed text; a newline ends one too.
+_SENTENCE_END = ".?!" + chr(0x0964) + chr(10)
+
+# Say something even if the model never reaches punctuation -- a long clause
+# with no full stop should not hold the whole turn silent.
+_MAX_UNSPOKEN_CHARS = 140
+
+
+def _next_sentence(buffer: str) -> tuple[str, str]:
+    """Splits off the first complete sentence. Returns (sentence, rest)."""
+    for i, ch in enumerate(buffer):
+        if ch in _SENTENCE_END:
+            # Keep the punctuation: the voice reads a question differently
+            # from a statement, and stripping it flattens the intonation.
+            return buffer[: i + 1].strip(), buffer[i + 1 :]
+    if len(buffer) >= _MAX_UNSPOKEN_CHARS:
+        cut = buffer.rfind(" ", 0, _MAX_UNSPOKEN_CHARS)
+        if cut > 0:
+            return buffer[:cut].strip(), buffer[cut:]
+    return "", buffer
+
+
+async def gemini_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
+    """Yields Gemini's reply in pieces, as it is written.
+
+    Same request body as _gemini_reply -- only the endpoint and the parsing
+    differ -- so a change to how the model is prompted cannot apply to one
+    path and not the other.
+    """
+    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    contents = [
+        {"role": "model" if m["role"] == "assistant" else "user",
+         "parts": [{"text": m["content"]}]}
+        for m in messages if m["role"] != "system"
+    ]
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": LLM_MAX_TOKENS, "temperature": 0.2},
+    }
+    if SELECTABLE_LLM_MODELS.get(model, {}).get("no_thinking"):
+        body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:streamGenerateContent?alt=sse&key={GOOGLE_API_KEY}")
+    async with session.post(url, json=body,
+                            timeout=aiohttp.ClientTimeout(total=30)) as r:
+        if r.status != 200:
+            raise RuntimeError(f"{model} stream failed: HTTP {r.status} {(await r.text())[:200]}")
+        async for line in r.content:
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == b"[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except Exception:
+                continue
+            for cand in ev.get("candidates") or []:
+                for part in cand.get("content", {}).get("parts", []):
+                    piece = part.get("text", "")
+                    if piece:
+                        yield piece
 
 
 def _gemini_reply(messages: list[dict], model: str, attempts: int) -> str:
@@ -1035,6 +1175,12 @@ class CallSession:
         # call's odd caller replies were background noise or a real
         # misunderstanding.
         self._caller_audio_chunks: list[bytes] = []
+        # The agent's own audio, so a recording holds both halves of the
+        # conversation. Kept as (offset, pcm) pairs rather than one buffer:
+        # the offset is where in the caller's timeline the agent started
+        # speaking, which is what lines the two sides up on playback.
+        self._bot_audio_segments: list[tuple[int, bytearray]] = []
+        self._bot_audio_segment: bytearray | None = None
         self._call_uuid = None
         self._from_number: str | None = None
         self._to_number: str | None = None
@@ -1304,6 +1450,15 @@ class CallSession:
         log.info("caller: %s", text)
         async with self._turn_lock:
             self.messages.append({"role": "user", "content": text})
+            # Streaming first: it starts speaking the opening sentence while
+            # the model is still writing, which is where most of the old
+            # 2.2-2.6s silence went. Falls back to waiting for the whole
+            # reply if the stream fails before a word has been spoken.
+            try:
+                await self._stream_turn()
+                return
+            except Exception:
+                log.exception("streaming reply failed -- falling back to a whole reply")
             try:
                 reply = await asyncio.to_thread(llm_reply, self.messages, 3, self._llm_model)
             except Exception:
@@ -1315,13 +1470,151 @@ class CallSession:
             log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
             self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call))
 
+    async def _stream_turn(self):
+        """Speaks the reply sentence by sentence, as the model writes it.
+
+        Raises before anything is spoken if the stream cannot start, so the
+        caller can fall back to the whole-reply path. Once a sentence has
+        been said, falling back would repeat it, so a later failure just ends
+        the turn with what was already spoken.
+        """
+        model = self._llm_model if self._llm_model in SELECTABLE_LLM_MODELS else LLM_MODEL
+        queue: asyncio.Queue = asyncio.Queue()
+        spoken_any = False
+        full = ""
+        buffer = ""
+
+        # One task does the speaking, in order, while this one keeps reading
+        # from the model -- that overlap is the whole point.
+        self._speak_task = asyncio.create_task(self._speak_queue(queue))
+        try:
+            async for piece in gemini_stream(self.http, self.messages, model):
+                full += piece
+                buffer += piece
+                while True:
+                    sentence, buffer = _next_sentence(buffer)
+                    if not sentence:
+                        break
+                    say = sentence.replace(END_MARKER, "").strip()
+                    if say:
+                        spoken_any = True
+                        await queue.put(say)
+            tail = buffer.replace(END_MARKER, "").strip()
+            if tail:
+                spoken_any = True
+                await queue.put(tail)
+        except Exception:
+            if not spoken_any:
+                # Nothing was said, so the fallback can safely say it all.
+                await queue.put(None)
+                raise
+            log.exception("stream broke mid-reply -- ending the turn with what was said")
+
+        if not spoken_any and not full.strip():
+            await queue.put(None)
+            raise RuntimeError("stream produced no text")
+
+        self.messages.append({"role": "assistant", "content": full})
+        end_call = END_MARKER in full
+        log.info("bot: %s%s", full.replace(END_MARKER, "").strip(),
+                 "  [END_CALL]" if end_call else "")
+        # None means "no more sentences"; the speaker hangs up after it if
+        # the reply asked for the call to end.
+        await queue.put(("END_CALL",) if end_call else None)
+
+    async def _speak_queue(self, queue: "asyncio.Queue"):
+        """Synthesises and sends each sentence in turn, until told to stop.
+
+        One task for the whole turn, so a barge-in cancelling self._speak_task
+        stops the entire reply -- not just the sentence being spoken.
+        """
+        end_call = False
+        self.speaking = True
+        self._begin_bot_audio()
+        self._checkpoint_n += 1
+        name = f"turn-{self._checkpoint_n}"
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, tuple):
+                    end_call = True
+                    break
+                async for chunk in synthesize(self.http, item, self._tts_language,
+                                              self._voice_overrides, self._tts_speed):
+                    self._collect_bot_audio(chunk)
+                    frame = 960
+                    for i in range(0, len(chunk), frame):
+                        self.playing = True
+                        await self._send({
+                            "event": "playAudio",
+                            "streamId": self.stream_id,
+                            "media": {"contentType": "audio/x-l16",
+                                     "sampleRate": TTS_SAMPLE_RATE,
+                                     "payload": base64.b64encode(chunk[i:i + frame]).decode()},
+                        })
+            self._awaiting_checkpoint = name
+            await self._send({"event": "checkpoint", "streamId": self.stream_id,
+                              "name": name})
+        except asyncio.CancelledError:
+            log.info("speak cancelled (barge-in)")
+            raise
+        finally:
+            self.speaking = False
+
+        if end_call:
+            for _ in range(300):
+                if not self.playing:
+                    break
+                await asyncio.sleep(0.1)
+            await self._send({"event": "stop", "streamId": self.stream_id})
+            self._done.set()
+
+    def _begin_bot_audio(self) -> None:
+        """Marks where in the caller timeline this turn starts speaking."""
+        offset = sum(len(c) for c in self._caller_audio_chunks)
+        self._bot_audio_segment = bytearray()
+        self._bot_audio_segments.append((offset, self._bot_audio_segment))
+
+    def _both_sides(self) -> bytes:
+        """The whole call as one mono track: the caller, with the agent mixed in.
+
+        The caller's audio is the timeline -- the phone line sends it
+        continuously, silence included -- so the agent's turns are laid over
+        it at the offset where each began.
+
+        One known imprecision: the agent's audio is sent to the phone faster
+        than it plays, so a long turn drifts slightly ahead of where the
+        caller actually heard it. Each turn starts in the right place, which
+        is what matters for judging a reply's timing and sound.
+        """
+        caller = b''.join(self._caller_audio_chunks)
+        if not self._bot_audio_segments:
+            return caller
+        try:
+            mixed = bytearray(caller)
+            for offset, segment in self._bot_audio_segments:
+                _mix_into(mixed, offset, _resample_24k_to_16k(bytes(segment)))
+            return bytes(mixed)
+        except Exception:
+            # A recording of one side beats no recording at all.
+            log.exception('could not mix the agent audio into the recording')
+            return caller
+
+    def _collect_bot_audio(self, chunk: bytes) -> None:
+        if self._bot_audio_segment is not None:
+            self._bot_audio_segment += chunk
+
     async def _speak(self, text: str, end_call: bool = False):
         self.speaking = True
+        self._begin_bot_audio()
         self._checkpoint_n += 1
         name = f"turn-{self._checkpoint_n}"
         try:
             async for chunk in synthesize(self.http, text, self._tts_language,
                                           self._voice_overrides, self._tts_speed):
+                self._collect_bot_audio(chunk)
                 # ~20ms frames at 24kHz/16-bit mono = 960 bytes.
                 frame = 960
                 for i in range(0, len(chunk), frame):
@@ -1517,7 +1810,7 @@ class CallSession:
             wf.setnchannels(1)
             wf.setsampwidth(2)  # 16-bit PCM, matches what Sarvam receives
             wf.setframerate(STT_SAMPLE_RATE)
-            wf.writeframes(b"".join(self._caller_audio_chunks))
+            wf.writeframes(self._both_sides())
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     async def _report(self):
