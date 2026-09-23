@@ -855,6 +855,50 @@ _SPOKEN_AS_PATTERNS = {
 }
 
 
+# Which language's voice can actually read this text.
+#
+# A voice_id on Raya belongs to one language and reads everything with that
+# language's rules, so a voice given the wrong script does not merely sound
+# accented -- it produces noise. A real call showed exactly that: the caller
+# said 'Customer care andi', Sarvam reported the language as English, the
+# agent switched its voice to English, and then read a Telugu-script reply
+# with it. The caller heard babble and hung up.
+#
+# The caller's language is the wrong thing to choose a voice by, because it
+# says nothing about what the agent is about to say. The text itself does,
+# and it is already written by the time a voice is needed. So the script
+# decides, and a detected language only matters when the text does not
+# settle it -- pure Latin, where several voices are plausible.
+
+_SCRIPT_RANGES = {
+    'te': (0x0C00, 0x0C7F),   # Telugu
+    'hi': (0x0900, 0x097F),   # Devanagari
+    'ta': (0x0B80, 0x0BFF),   # Tamil
+    'kn': (0x0C80, 0x0CFF),   # Kannada
+    'ml': (0x0D00, 0x0D7F),   # Malayalam
+    'bn': (0x0980, 0x09FF),   # Bengali
+}
+
+
+def voice_language_for(text: str, requested: str) -> str:
+    """The language whose voice should read `text`."""
+    counts = {lang: 0 for lang in _SCRIPT_RANGES}
+    for ch in text:
+        code = ord(ch)
+        for lang, (lo, hi) in _SCRIPT_RANGES.items():
+            if lo <= code <= hi:
+                counts[lang] += 1
+                break
+    best = max(counts, key=lambda k: counts[k])
+    if counts[best] == 0:
+        # Nothing but Latin, digits and punctuation -- the caller's language
+        # is then the only signal there is.
+        return requested
+    if best != requested:
+        log.info('voice: reading %s-script text, using the %s voice instead of %s',
+                 best, best, requested)
+    return best
+
 def say_as_spoken(text: str, language: str) -> str:
     """Rewrites words the voice mispronounces into the script it reads right."""
     for pattern, said in _SPOKEN_AS_PATTERNS.get(language, []):
@@ -923,6 +967,8 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     speaker to read Hindi gives Telugu pronunciation of Hindi text at best.
     RAYA_VOICES maps each language to a voice that actually speaks it.
     """
+    # The script decides the voice; see voice_language_for.
+    language = voice_language_for(text, language)
     text = say_as_spoken(text, language)
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
     rate = speed if speed in SELECTABLE_SPEEDS else 1
@@ -1783,6 +1829,13 @@ class CallSession:
     async def close(self):
         if self._speak_task:
             self._speak_task.cancel()
+            # Awaited, not just cancelled: a cancelled task collected before
+            # it has finished unwinding logs 'Task was destroyed but it is
+            # pending', which is noise that hides real errors in the log.
+            try:
+                await self._speak_task
+            except (asyncio.CancelledError, Exception):
+                pass
         # Otherwise a pending debounce fires after the caller has hung up and
         # tries to answer a turn on a closed socket.
         if self._debounce_task:
