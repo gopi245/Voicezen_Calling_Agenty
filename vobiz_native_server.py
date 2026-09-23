@@ -1626,6 +1626,13 @@ class CallSession:
         self._pending_lang_count = 0
         # VOICEZEN TEST -- see the guard in _on_speech_start/_on_transcript.
         self._ignored_noise_until: float | None = None
+        # VOICEZEN TEST -- one speaker at a time. A caller who says "hello"
+        # while the greeting is still being generated (before it starts
+        # playing, so it isn't a barge-in) used to get a reply sent to the
+        # phone line alongside the still-arriving greeting. Held for the
+        # whole of a turn's sending, so the next turn's audio can only
+        # follow it, never mix into it.
+        self._speak_lock = asyncio.Lock()
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1862,6 +1869,12 @@ class CallSession:
                 "WhatsApp, team, order, appointment, etc.) mixed into Telugu "
                 "sentences is normal and expected, but the sentence itself, "
                 "and every reply as a whole, stays in Telugu."
+                "\n\nThe welcome has already been spoken -- it is your first "
+                "message above. Never welcome the caller again or repeat "
+                "\"VoiceZen కి స్వాగతం\" or your introduction. If the caller "
+                "only greets you (hello, hi, good morning, నమస్కారం), greet "
+                "them back in two or three words and ask how you can help, "
+                "e.g. \"నమస్కారం అండి, చెప్పండి, మీకు ఎలా సహాయం చేయగలను?\""
             )
         self.messages = [{"role": "system", "content": instructions}]
 
@@ -2095,6 +2108,10 @@ class CallSession:
         stops the entire reply -- not just the sentence being spoken.
         """
         end_call = False
+        # Taken before anything else, so a cancel while waiting holds nothing.
+        lock = None if self._legacy_engine else self._speak_lock
+        if lock is not None:
+            await lock.acquire()
         self.speaking = True
         self._begin_bot_audio()
         self._checkpoint_n += 1
@@ -2140,6 +2157,8 @@ class CallSession:
             raise
         finally:
             self.speaking = False
+            if lock is not None:
+                lock.release()
 
         if end_call:
             for _ in range(300):
@@ -2185,6 +2204,10 @@ class CallSession:
             self._bot_audio_segment += chunk
 
     async def _speak(self, text: str, end_call: bool = False):
+        # See _speak_lock in __init__.
+        lock = None if self._legacy_engine else self._speak_lock
+        if lock is not None:
+            await lock.acquire()
         self.speaking = True
         self._begin_bot_audio()
         self._checkpoint_n += 1
@@ -2220,6 +2243,8 @@ class CallSession:
             # Only the SENDING is done here. `playing` deliberately stays set:
             # it is cleared by playedStream, or by a barge-in's clearAudio.
             self.speaking = False
+            if lock is not None:
+                lock.release()
 
         if end_call:
             # Wait for the goodbye to actually reach the caller before tearing
