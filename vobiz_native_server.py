@@ -73,13 +73,30 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
 # default: unset, GROQ_API_KEY simply isn't used and every call behaves
 # exactly as before this existed.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+# Qwen 3.6 with thinking off, chosen 2026-09-23 on measured first-word
+# time with the VoiceZen prompt: median 0.23s, worst 0.56s over 10 turns,
+# against gpt-oss-120b's 0.47s median and 3.24s worst -- gpt-oss thinks
+# before it speaks and that thinking time is what swung. ~3x gpt-oss's
+# price per call; chosen knowingly for the latency.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
 # Groq's API sits behind Cloudflare, which silently 403s a request with
 # no browser-like User-Agent -- found by testing, not documented
 # anywhere. Without this header every Groq call fails and falls back to
 # Gemini on every single turn, which would look like Groq "isn't
 # working" rather than the one-line cause it actually is.
 GROQ_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+# Both model families reason silently before their first visible word, and
+# that thinking time is what made first-token time swing from 0.3s to 4s.
+# Qwen takes "none" (thinking off entirely); gpt-oss can't turn it off and
+# takes "low" (measured median 0.36s vs 0.88s at its default "medium").
+GROQ_REASONING_EFFORT = os.getenv(
+    "GROQ_REASONING_EFFORT", "none" if GROQ_MODEL.startswith("qwen/") else "low")
+# If Groq hasn't produced a first word by now, a second identical request
+# is sent and whichever speaks first wins. Groq's slow requests are server
+# jitter, not the prompt, so a fresh request is usually fast; this is what
+# keeps the rare slow turn under two seconds. Costs a second request only
+# on the turns that needed it.
+GROQ_HEDGE_AFTER_S = float(os.getenv("GROQ_HEDGE_AFTER_S", "0.7"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "400"))
 
 # ADMIN -- the models the admin dashboard may pick per client, each tried on
@@ -1087,7 +1104,14 @@ async def groq_stream(session: aiohttp.ClientSession, messages: list[dict], mode
         "max_tokens": LLM_MAX_TOKENS,
         "temperature": 0.2,
         "stream": True,
+        "reasoning_effort": GROQ_REASONING_EFFORT,
     }
+    if model.startswith("qwen/"):
+        # Qwen writes any reasoning inline as <think>...</think> in the
+        # content itself -- an earlier test had it spoken aloud mid-reply.
+        # Thinking is off, but "hidden" guarantees none ever reaches the
+        # voice even if that changes.
+        body["reasoning_format"] = "hidden"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
@@ -1115,6 +1139,97 @@ async def groq_stream(session: aiohttp.ClientSession, messages: list[dict], mode
                     yield piece
 
 
+async def _pump(agen, q: "asyncio.Queue"):
+    try:
+        async for piece in agen:
+            await q.put(("piece", piece))
+        await q.put(("done", None))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        await q.put(("error", e))
+
+
+async def groq_hedged_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
+    """groq_stream, plus a second identical request if the first hasn't
+    produced a word within GROQ_HEDGE_AFTER_S. The first to speak wins and
+    the other is cancelled.
+
+    Same contract as groq_stream: raises if every request failed, yields
+    nothing if every request came back empty -- llm_stream falls back to
+    Gemini on either.
+    """
+    contenders: list[tuple] = []
+
+    def start():
+        q: asyncio.Queue = asyncio.Queue()
+        contenders.append((asyncio.create_task(_pump(groq_stream(session, messages, model), q)), q))
+
+    getters: dict = {}
+    start()
+    hedged = False
+    deadline = time.time() + GROQ_HEDGE_AFTER_S
+    winner = None
+    first_piece = None
+    last_error: Exception | None = None
+    try:
+        while winner is None and contenders:
+            for c in contenders:
+                if c not in getters:
+                    getters[c] = asyncio.create_task(c[1].get())
+            timeout = None if hedged else max(0.0, deadline - time.time())
+            done, _ = await asyncio.wait(set(getters.values()), timeout=timeout,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                hedged = True
+                log.info("groq silent after %.1fs -- sending a second request", GROQ_HEDGE_AFTER_S)
+                start()
+                continue
+            for c, g in list(getters.items()):
+                if g not in done:
+                    continue
+                del getters[c]
+                kind, val = g.result()
+                if kind == "piece":
+                    if winner is None:
+                        winner, first_piece = c, val
+                else:
+                    if kind == "error":
+                        last_error = val
+                    contenders.remove(c)
+
+        if winner is None:
+            if last_error is not None:
+                raise last_error
+            return
+        if hedged:
+            log.info("groq hedge: request %d of %d answered first",
+                     contenders.index(winner) + 1, len(contenders))
+        for c in contenders:
+            if c is not winner:
+                c[0].cancel()
+        for g in getters.values():
+            g.cancel()
+        getters.clear()
+
+        yield first_piece
+        q = winner[1]
+        while True:
+            kind, val = await q.get()
+            if kind == "piece":
+                yield val
+            elif kind == "done":
+                return
+            else:
+                raise val
+    finally:
+        for g in getters.values():
+            g.cancel()
+        for t, _ in contenders:
+            if not t.done():
+                t.cancel()
+
+
 async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
     """The primary streaming path a call actually uses: Groq first, Gemini
     if Groq is unavailable or fails before producing anything. Mirrors
@@ -1135,7 +1250,7 @@ async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model
     if GROQ_API_KEY:
         produced_any = False
         try:
-            async for piece in groq_stream(session, messages, GROQ_MODEL):
+            async for piece in groq_hedged_stream(session, messages, GROQ_MODEL):
                 produced_any = True
                 yield piece
             if produced_any:
@@ -1728,19 +1843,25 @@ class CallSession:
 
         instructions = _instructions_no_livekit(instructions)
         # VOICEZEN TEST -- appended here rather than in script_voicezen.py:
-        # this project's call scripts are otherwise off limits. A real call
-        # showed the model mirroring a single mis-transcribed word (Sarvam
-        # wrote a one-word "yes" as Bengali, a misheard "పది" as Tamil) into
-        # a whole reply in that language. This only overrides a one-word,
-        # ambiguous transcript; a caller who actually opens in another
-        # language for a full sentence is still real signal and still
-        # followed, same as before.
+        # this project's call scripts are otherwise off limits. Overrides
+        # the script's own "mirror the caller's language" rule (section 0)
+        # on request: the bot now always replies in Telugu, in the same
+        # natural style the script's own worked examples already use --
+        # ordinary English business words (business, AI, demo, WhatsApp,
+        # team, etc.) mixed in as Telugu speakers normally do, not full
+        # English/Hindi/Tamil sentences even when the caller writes or
+        # speaks in one of those languages.
         if not self._legacy_engine:
             instructions += (
-                "\n\nLanguage: default to replying in Telugu. Only switch to a "
-                "different language if the caller's own message clearly uses "
-                "several words in that language -- a single short or ambiguous "
-                "word is not enough on its own to switch."
+                "\n\nLanguage override: always reply in Telugu, regardless of "
+                "what language the caller writes or speaks in. Ignore any "
+                "instruction above this line that says to mirror or switch to "
+                "the caller's language -- it no longer applies. Keep writing "
+                "naturally, the way the script's own worked examples do: "
+                "common English business words (business, AI, agent, demo, "
+                "WhatsApp, team, order, appointment, etc.) mixed into Telugu "
+                "sentences is normal and expected, but the sentence itself, "
+                "and every reply as a whole, stays in Telugu."
             )
         self.messages = [{"role": "system", "content": instructions}]
 
