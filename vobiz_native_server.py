@@ -251,6 +251,11 @@ TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.65"))
 # a normal human reaction/interrupt time, so a genuine early interruption
 # is still honoured; only the call-setup click is filtered out.
 MIN_BARGE_IN_MS = float(os.getenv("MIN_BARGE_IN_MS", "350"))
+# VOICEZEN TEST -- how long a sound over the bot must last, with no words
+# recognised yet, before the bot stops for it. "హ్మ్"/"ఓకే" have been
+# transcribed well within this; a caller actually interrupting is still
+# talking. See _on_speech_start.
+BARGE_IN_CONFIRM_S = float(os.getenv("BARGE_IN_CONFIRM_S", "1.0"))
 
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
@@ -313,9 +318,27 @@ _BACKCHANNEL_WORDS = {
 }
 
 
+_FILLER_WORDS = {"hmm", "hm", "hmmm", "mm", "mhm", "హ్మ్", "హ్మ్మ్", "ఊ"}
+
+
+def _words(text: str) -> list[str]:
+    return re.sub(r"[.,!?" + chr(0x0964) + r"]", " ", text.lower()).split()
+
+
 def _is_backchannel(text: str) -> bool:
-    words = re.sub(r"[.,!?" + chr(0x0964) + r"]", " ", text.lower()).split()
+    words = _words(text)
     return 0 < len(words) <= 4 and all(w in _BACKCHANNEL_WORDS for w in words)
+
+
+def _is_filler(text: str) -> bool:
+    words = _words(text)
+    return 0 < len(words) <= 2 and all(w in _FILLER_WORDS for w in words)
+
+
+def _is_minor(text: str) -> bool:
+    """Too little to interrupt the bot mid-sentence: an acknowledgement, or
+    a single word -- which is usually noise the recogniser made into one."""
+    return _is_backchannel(text) or len(_words(text)) <= 1
 
 
 def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool) -> bool:
@@ -1667,6 +1690,7 @@ class CallSession:
         self._open_turn: dict | None = None
         self._line_free_at = 0.0
         self._live_speak: set = set()
+        self._barge_timer: asyncio.Task | None = None
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1963,6 +1987,24 @@ class CallSession:
                 # real speech, and is dropped in _on_transcript.
                 self._ignored_noise_until = self._playback_started_at + (MIN_BARGE_IN_MS / 1000)
                 return
+        if not self._legacy_engine:
+            # VOICEZEN TEST -- don't stop on the sound alone. A real call was
+            # cut off four times by "హ్మ్"/"ఓకే"/noise, losing the whole
+            # coaching-centre pitch. _on_transcript decides as soon as the
+            # words arrive; if they haven't by BARGE_IN_CONFIRM_S, the caller
+            # is still talking and that is a real interruption.
+            if self._barge_timer is None or self._barge_timer.done():
+                self._barge_timer = asyncio.create_task(self._confirm_barge_in())
+            return
+        await self._barge_in()
+
+    async def _confirm_barge_in(self):
+        await asyncio.sleep(BARGE_IN_CONFIRM_S)
+        if self.playing:
+            log.info("barge-in: caller still talking after %.1fs", BARGE_IN_CONFIRM_S)
+            await self._barge_in()
+
+    async def _barge_in(self):
         log.info("barge-in: clearing playback")
         # clearAudio is the ONLY thing that stops audio already queued inside
         # Vobiz. Cancelling the task just stops us sending more, and by now
@@ -1971,6 +2013,11 @@ class CallSession:
         await self._send({"event": "clearAudio", "streamId": self.stream_id})
         if self._speak_task and not self._speak_task.done():
             self._speak_task.cancel()
+        if not self._legacy_engine:
+            # A reply can be sending while another waits on the speak lock.
+            for t in list(self._live_speak):
+                if not t.done():
+                    t.cancel()
         # Vobiz does NOT send playedStream for a checkpoint whose audio was
         # interrupted, so clear the state here or it would never clear.
         self.playing = False
@@ -1999,6 +2046,32 @@ class CallSession:
                 and time.time() < self._ignored_noise_until):
             log.info("transcript ignored: %r arrived in the same window as dismissed call-setup noise", text)
             return
+        if not self._legacy_engine and not self._pending:
+            timer = self._barge_timer
+            waiting = timer is not None and not timer.done()
+            ot = self._open_turn
+            generating = ot is not None and ot["task"] is not None and not ot["task"].done()
+            talking_left = self._line_free_at - time.time()
+            if _is_filler(text) and (waiting or generating or talking_left > 0):
+                # "హ్మ్" is never an answer, even at the end of a question.
+                if waiting:
+                    timer.cancel()
+                log.info("ignored %r: filler while the bot is talking", text)
+                return
+            if _is_minor(text) and (generating or talking_left > 1.0):
+                # One word or an "ఓకే" with the bot well into a sentence:
+                # listening, or noise the recogniser turned into a word
+                # ("Mom", "माझी", "சரி" on a real call). Keep talking.
+                if waiting:
+                    timer.cancel()
+                log.info("ignored %r: too short to interrupt the bot", text)
+                return
+            if waiting:
+                # Real words while the bot is talking: stop now rather than
+                # at the timer.
+                timer.cancel()
+                if self.playing:
+                    await self._barge_in()
         log.info("caller (partial): %s", text)
         if not self._pending:
             self._first_fragment_at = time.time()
@@ -2395,6 +2468,8 @@ class CallSession:
             pass
 
     async def close(self):
+        if getattr(self, "_barge_timer", None) is not None and not self._barge_timer.done():
+            self._barge_timer.cancel()
         if self._speak_task:
             self._speak_task.cancel()
             # Awaited, not just cancelled: a cancelled task collected before
