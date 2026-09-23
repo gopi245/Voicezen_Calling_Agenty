@@ -302,6 +302,22 @@ def _instructions_no_livekit(base_instructions: str) -> str:
     )
 
 
+# VOICEZEN TEST -- words a caller says to show they're listening, not to
+# ask for anything. A real call showed "Okay", "Hello", "Hmm" and "ఓకేనండి"
+# each answered as a separate turn while the bot was still talking, so the
+# caller heard the same question four times.
+_BACKCHANNEL_WORDS = {
+    "ok", "okay", "okk", "hmm", "hm", "hmmm", "mm", "mhm", "haa", "ha", "yes",
+    "yeah", "hello", "సరే", "సరేనండి", "ఓకే", "ఓకేనండి", "అలాగే", "అలాగేనండి",
+    "అవును", "అవునండి", "హా", "హ్మ్", "హ్మ్మ్", "ఊ", "హలో", "అండి",
+}
+
+
+def _is_backchannel(text: str) -> bool:
+    words = re.sub(r"[.,!?" + chr(0x0964) + r"]", " ", text.lower()).split()
+    return 0 < len(words) <= 4 and all(w in _BACKCHANNEL_WORDS for w in words)
+
+
 def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool) -> bool:
     """True if a reply carrying END_MARKER should actually hang up.
 
@@ -1643,6 +1659,14 @@ class CallSession:
         # whole of a turn's sending, so the next turn's audio can only
         # follow it, never mix into it.
         self._speak_lock = asyncio.Lock()
+        # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
+        # turn can replace it (see _supersede_open_turn), plus an estimate of
+        # when the phone line will have finished playing everything sent to
+        # it. Vobiz plays in real time, so audio is usually sent seconds
+        # before the caller hears it, and "sent" alone can't tell us that.
+        self._open_turn: dict | None = None
+        self._line_free_at = 0.0
+        self._live_speak: set = set()
         self._started_at: float | None = None
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
@@ -1951,6 +1975,7 @@ class CallSession:
         # interrupted, so clear the state here or it would never clear.
         self.playing = False
         self._awaiting_checkpoint = None
+        self._line_free_at = time.time()
 
     def _on_played(self, name: str | None):
         """Vobiz confirms the caller has now heard everything up to a
@@ -2002,10 +2027,72 @@ class CallSession:
         # that fix addressed, until Gundusoodhi is explicitly moved onto it.
         if self._legacy_engine:
             await self._handle_turn(text)
-        else:
-            asyncio.create_task(self._handle_turn(text))
+            return
+        prev = self._open_turn
+        generating = prev is not None and prev["task"] is not None and not prev["task"].done()
+        still_talking = self._line_free_at - time.time()
+        if _is_backchannel(text) and (generating or still_talking > 1.0):
+            # "Okay"/"Hmm" while the bot is mid-answer is listening, not a
+            # new question. Under a second left, it's more likely an answer
+            # to the question just asked, so it goes through as a turn.
+            log.info("ignored %r: acknowledgement while the bot is still talking", text)
+            return
+        text = self._supersede_open_turn(text)
+        turn = {"text": text, "msg_start": None, "heard_at": None,
+                "task": None, "speak_task": None, "rollback": False}
+        self._open_turn = turn
+        turn["task"] = asyncio.create_task(self._handle_turn(text, turn))
 
-    async def _handle_turn(self, text: str):
+    def _supersede_open_turn(self, text: str) -> str:
+        """VOICEZEN TEST -- the caller said something new while the bot still
+        had an answer in progress. Stops that answer and returns the text the
+        new turn should answer.
+
+        If the caller hadn't heard any of the old answer, it is removed from
+        the history (the model would otherwise believe it said something it
+        never did) and the caller's earlier words are merged into this turn.
+        If they had heard part of it, it stays in the history and only the
+        rest is cut, the same as a barge-in.
+        """
+        prev = self._open_turn
+        now = time.time()
+        busy = [t for t in ((prev or {}).get("task"), (prev or {}).get("speak_task"))
+                if t is not None and not t.done()]
+        line_busy = now < self._line_free_at
+        if not busy and not line_busy:
+            return text
+        unheard = prev is not None and (prev["heard_at"] is None or prev["heard_at"] > now)
+        log.info("caller spoke again while the last reply was %s -- replacing it",
+                 "not yet heard" if unheard else "still playing")
+        if prev is not None:
+            prev["rollback"] = unheard
+            for t in busy:
+                t.cancel()
+        for t in list(self._live_speak):
+            if not t.done():
+                t.cancel()
+        if line_busy:
+            # Not awaited: this runs between committing a turn and starting
+            # it, and a cancel landing on an await here would lose the turn.
+            asyncio.create_task(self._send({"event": "clearAudio", "streamId": self.stream_id}))
+        self.playing = False
+        self._awaiting_checkpoint = None
+        self._line_free_at = now
+        if unheard:
+            if prev["task"] is not None and prev["task"].done() and prev["msg_start"] is not None:
+                # Finished generating, so its own cancel handler won't run.
+                del self.messages[prev["msg_start"]:]
+            return (prev["text"] + " " + text).strip()
+        return text
+
+    def _note_line_audio(self, nbytes: int, turn: dict | None) -> None:
+        """Advances the estimate of when the line will finish playing."""
+        start = max(time.time(), self._line_free_at)
+        if turn is not None and turn["heard_at"] is None:
+            turn["heard_at"] = start
+        self._line_free_at = start + nbytes / (TTS_SAMPLE_RATE * 2)
+
+    async def _handle_turn(self, text: str, turn: dict | None = None):
         # user_speech_end / stt_transcript_ready. first_fragment_at is the
         # honest proxy for 'the caller stopped talking' -- it is set the
         # instant Sarvam sends its FIRST final for this turn, before the
@@ -2034,28 +2121,44 @@ class CallSession:
         )
         log.info("caller: %s", text)
         async with self._turn_lock:
-            self.messages.append({"role": "user", "content": text})
-            # Streaming first: it starts speaking the opening sentence while
-            # the model is still writing, which is where most of the old
-            # 2.2-2.6s silence went. Falls back to waiting for the whole
-            # reply if the stream fails before a word has been spoken.
+            msg_start = len(self.messages)
+            if turn is not None:
+                turn["msg_start"] = msg_start
             try:
-                await self._stream_turn(transcript_at, speech_seen_at)
-                return
-            except Exception:
-                log.exception("streaming reply failed -- falling back to a whole reply")
-            try:
-                reply = await asyncio.to_thread(llm_reply, self.messages, 3, self._llm_model)
-            except Exception:
-                log.exception("llm failed")
-                return
-            self.messages.append({"role": "assistant", "content": reply})
-            spoken = reply.replace(END_MARKER, "").strip()
-            end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine)
-            log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
-            self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call))
+                await self._answer_turn(text, transcript_at, speech_seen_at, turn)
+            except asyncio.CancelledError:
+                # Replaced by a newer turn before the caller heard any of it.
+                if turn is not None and turn["rollback"]:
+                    del self.messages[msg_start:]
+                raise
 
-    async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None):
+    async def _answer_turn(self, text: str, transcript_at: float,
+                           speech_seen_at: float | None, turn: dict | None):
+        self.messages.append({"role": "user", "content": text})
+        # Streaming first: it starts speaking the opening sentence while
+        # the model is still writing, which is where most of the old
+        # 2.2-2.6s silence went. Falls back to waiting for the whole
+        # reply if the stream fails before a word has been spoken.
+        try:
+            await self._stream_turn(transcript_at, speech_seen_at, turn)
+            return
+        except Exception:
+            log.exception("streaming reply failed -- falling back to a whole reply")
+        try:
+            reply = await asyncio.to_thread(llm_reply, self.messages, 3, self._llm_model)
+        except Exception:
+            log.exception("llm failed")
+            return
+        self.messages.append({"role": "assistant", "content": reply})
+        spoken = reply.replace(END_MARKER, "").strip()
+        end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine)
+        log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
+        self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call, turn=turn))
+        if turn is not None:
+            turn["speak_task"] = self._speak_task
+
+    async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None,
+                           turn: dict | None = None):
         """Speaks the reply sentence by sentence, as the model writes it.
 
         Raises before anything is spoken if the stream cannot start, so the
@@ -2076,7 +2179,9 @@ class CallSession:
         # One task does the speaking, in order, while this one keeps reading
         # from the model -- that overlap is the whole point.
         self._speak_task = asyncio.create_task(
-            self._speak_queue(queue, transcript_at, speech_seen_at))
+            self._speak_queue(queue, transcript_at, speech_seen_at, turn))
+        if turn is not None:
+            turn["speak_task"] = self._speak_task
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
@@ -2119,13 +2224,16 @@ class CallSession:
         await queue.put(("END_CALL",) if end_call else None)
 
     async def _speak_queue(self, queue: "asyncio.Queue", transcript_at: float,
-                            speech_seen_at: float | None):
+                            speech_seen_at: float | None, turn: dict | None = None):
         """Synthesises and sends each sentence in turn, until told to stop.
 
         One task for the whole turn, so a barge-in cancelling self._speak_task
         stops the entire reply -- not just the sentence being spoken.
         """
         end_call = False
+        me = asyncio.current_task()
+        self._live_speak.add(me)
+        me.add_done_callback(self._live_speak.discard)
         # Taken before anything else, so a cancel while waiting holds nothing.
         lock = None if self._legacy_engine else self._speak_lock
         if lock is not None:
@@ -2160,6 +2268,7 @@ class CallSession:
                         if not self.playing:
                             self._playback_started_at = time.time()
                         self.playing = True
+                        self._note_line_audio(len(chunk[i:i + frame]), turn)
                         await self._send({
                             "event": "playAudio",
                             "streamId": self.stream_id,
@@ -2221,7 +2330,10 @@ class CallSession:
         if self._bot_audio_segment is not None:
             self._bot_audio_segment += chunk
 
-    async def _speak(self, text: str, end_call: bool = False):
+    async def _speak(self, text: str, end_call: bool = False, turn: dict | None = None):
+        me = asyncio.current_task()
+        self._live_speak.add(me)
+        me.add_done_callback(self._live_speak.discard)
         # See _speak_lock in __init__.
         lock = None if self._legacy_engine else self._speak_lock
         if lock is not None:
@@ -2244,6 +2356,7 @@ class CallSession:
                     if not self.playing:
                         self._playback_started_at = time.time()
                     self.playing = True
+                    self._note_line_audio(len(chunk[i:i + frame]), turn)
                     await self._send({
                         "event": "playAudio",
                         "streamId": self.stream_id,
