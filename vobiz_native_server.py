@@ -1043,76 +1043,83 @@ def _f32le_to_s16le(raw: bytes) -> bytes:
 
 # ---------------------------------------------------------------- Gemini LLM
 
-async def groq_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
-    """Yields a reply in pieces, as Groq writes it. Same contract as
-    gemini_stream: a caller that already reads one can read either.
-
-    Groq speaks the OpenAI chat-completions shape, not Gemini's -- system
-    prompt as a normal message with role='system' rather than a separate
-    field, and the streamed chunks are SSE 'data: {...}' lines whose
-    delta lives at choices[0].delta.content.
-    """
-    body = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": LLM_MAX_TOKENS,
-        "temperature": 0.2,
-        "stream": True,
-    }
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-        "User-Agent": GROQ_USER_AGENT,
-    }
-    async with session.post("https://api.groq.com/openai/v1/chat/completions",
-                            json=body, headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=15)) as r:
-        if r.status != 200:
-            raise RuntimeError(f"groq {model} failed: HTTP {r.status} {(await r.text())[:200]}")
-        async for line in r.content:
-            line = line.strip()
-            if not line.startswith(b"data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == b"[DONE]":
-                break
-            try:
-                ev = json.loads(payload)
-            except Exception:
-                continue
-            for choice in ev.get("choices") or []:
-                piece = (choice.get("delta") or {}).get("content", "")
-                if piece:
-                    yield piece
-
-
-async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
-    """The primary streaming path a call actually uses: Groq first, Gemini
-    if Groq is unavailable or fails before producing anything. Mirrors
-    llm_reply's own rule for a chosen model -- a bad or slow path costs
-    one turn, never a silent call.
-
-    Only falls back before any text has been yielded. Once a piece has
-    reached the caller it may already be mid-sentence to the speaker, and
-    starting over from a second provider would repeat or garble what was
-    already spoken -- the same reasoning _stream_turn already applies to
-    its own whole-reply fallback.
-    """
-    if GROQ_API_KEY:
-        produced_any = False
-        try:
-            async for piece in groq_stream(session, messages, GROQ_MODEL):
-                produced_any = True
-                yield piece
-            return
-        except Exception:
-            if produced_any:
-                log.exception("groq failed mid-reply -- turn ends with what was already spoken")
-                return
-            log.exception("groq unavailable, falling back to gemini for this turn")
-    async for piece in gemini_stream(session, messages, model):
-        yield piece
-
+async def groq_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
+    """Yields a reply in pieces, as Groq writes it. Same contract as
+    gemini_stream: a caller that already reads one can read either.
+
+    Groq speaks the OpenAI chat-completions shape, not Gemini's -- system
+    prompt as a normal message with role='system' rather than a separate
+    field, and the streamed chunks are SSE 'data: {...}' lines whose
+    delta lives at choices[0].delta.content.
+    """
+    body = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": LLM_MAX_TOKENS,
+        "temperature": 0.2,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+        "User-Agent": GROQ_USER_AGENT,
+    }
+    async with session.post("https://api.groq.com/openai/v1/chat/completions",
+                            json=body, headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=15)) as r:
+        if r.status != 200:
+            raise RuntimeError(f"groq {model} failed: HTTP {r.status} {(await r.text())[:200]}")
+        async for line in r.content:
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == b"[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except Exception:
+                continue
+            for choice in ev.get("choices") or []:
+                piece = (choice.get("delta") or {}).get("content", "")
+                if piece:
+                    yield piece
+
+
+async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
+    """The primary streaming path a call actually uses: Groq first, Gemini
+    if Groq is unavailable or fails before producing anything. Mirrors
+    llm_reply's own rule for a chosen model -- a bad or slow path costs
+    one turn, never a silent call.
+
+    Only falls back before any text has been yielded. Once a piece has
+    reached the caller it may already be mid-sentence to the speaker, and
+    starting over from a second provider would repeat or garble what was
+    already spoken -- the same reasoning _stream_turn already applies to
+    its own whole-reply fallback.
+
+    A stream that finishes with HTTP 200 but zero content pieces is treated
+    the same as one that raised: Groq's oss models occasionally answer with
+    nothing in the visible content field on odd or garbled input, and that
+    is silent unless something notices and tries Gemini instead.
+    """
+    if GROQ_API_KEY:
+        produced_any = False
+        try:
+            async for piece in groq_stream(session, messages, GROQ_MODEL):
+                produced_any = True
+                yield piece
+            if produced_any:
+                return
+            log.warning("groq returned no content for this turn, falling back to gemini")
+        except Exception:
+            if produced_any:
+                log.exception("groq failed mid-reply -- turn ends with what was already spoken")
+                return
+            log.exception("groq unavailable, falling back to gemini for this turn")
+    async for piece in gemini_stream(session, messages, model):
+        yield piece
+
 
 def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None) -> str:
     """One reply from Gemini. `model` is an admin-chosen model for this
