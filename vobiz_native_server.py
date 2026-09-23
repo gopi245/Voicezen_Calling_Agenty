@@ -213,7 +213,7 @@ STT_SAMPLE_RATE = 16000  # Vobiz inbound contentType we request; Sarvam recommen
 # worth more than any other change here. Override with TURN_DEBOUNCE_S if a
 # call starts replying to fragments again (that shows up as the bot
 # answering a half-sentence, or two replies for one thing the caller said).
-TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.45"))
+TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.65"))
 
 # A barge-in signal this early into our own playback is line noise, not
 # the caller -- see the note on _playback_started_at. 350ms is well under
@@ -1637,7 +1637,10 @@ class CallSession:
         self._pending.clear()
         if not text:
             return
-        await self._handle_turn(text)
+        # A separate task from here on: once the wait is over the turn
+        # is committed, and a fragment arriving moments later must not be
+        # able to cancel a reply already being generated or spoken.
+        asyncio.create_task(self._handle_turn(text))
 
     async def _handle_turn(self, text: str):
         # user_speech_end / stt_transcript_ready. first_fragment_at is the
