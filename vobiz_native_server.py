@@ -207,7 +207,13 @@ STT_SAMPLE_RATE = 16000  # Vobiz inbound contentType we request; Sarvam recommen
 # "అవును." / "అవును సార్." / "సబ్‌స్క్రిప్షన్ ప్లాన్స్ ఎలా ఉన్నాయండి?" arrived as
 # three transcripts. Wait this long after a transcript for more to arrive, and
 # answer the combined text as ONE turn.
-TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.9"))
+# Lowered from 0.9s to 0.45s: fragments of one sentence arrive within
+# ~150-300ms of each other on real calls, so 0.45s still merges them, and
+# it is the single largest fixed cost in the whole turn -- cutting it is
+# worth more than any other change here. Override with TURN_DEBOUNCE_S if a
+# call starts replying to fragments again (that shows up as the bot
+# answering a half-sentence, or two replies for one thing the caller said).
+TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.45"))
 
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
@@ -1339,6 +1345,7 @@ class CallSession:
         # difference was invisible: it sits between the caller finishing and
         # the transcript arriving, which nothing was recording.
         self._speech_seen_at: float | None = None
+        self._first_fragment_at: float | None = None
         self._transcript_at: float | None = None
         self._call_uuid = None
         self._from_number: str | None = None
@@ -1590,6 +1597,8 @@ class CallSession:
         splits one spoken sentence into several finals, so answering each one
         immediately makes the bot reply to fragments and talk over itself."""
         log.info("caller (partial): %s", text)
+        if not self._pending:
+            self._first_fragment_at = time.time()
         self._pending.append(text)
         if self._debounce_task and not self._debounce_task.done():
             self._debounce_task.cancel()
@@ -1607,10 +1616,23 @@ class CallSession:
         await self._handle_turn(text)
 
     async def _handle_turn(self, text: str):
+        # user_speech_end / stt_transcript_ready. first_fragment_at is the
+        # honest proxy for 'the caller stopped talking' -- it is set the
+        # instant Sarvam sends its FIRST final for this turn, before the
+        # debounce wait and before any later fragments are merged in.
         self._transcript_at = time.time()
-        if self._speech_seen_at:
-            log.info("timing: transcript %.2fs after speech was first heard",
-                     self._transcript_at - self._speech_seen_at)
+        stt_ready_after = (
+            self._transcript_at - self._first_fragment_at if self._first_fragment_at else None
+        )
+        end_to_ready = (
+            self._transcript_at - self._speech_seen_at if self._speech_seen_at else None
+        )
+        log.info(
+            "TIMING turn stt_transcript_ready=%s speech_to_ready=%s debounce=%.2fs",
+            f'{stt_ready_after:.2f}s' if stt_ready_after is not None else 'n/a',
+            f'{end_to_ready:.2f}s' if end_to_ready is not None else 'n/a',
+            TURN_DEBOUNCE_S,
+        )
         log.info("caller: %s", text)
         async with self._turn_lock:
             self.messages.append({"role": "user", "content": text})
@@ -1654,6 +1676,9 @@ class CallSession:
         try:
             async for piece in gemini_stream(self.http, self.messages, model):
                 full += piece
+                if buffer == '' and full == piece:
+                    log.info("TIMING turn llm_first_token=%.2fs after transcript",
+                             time.time() - self._transcript_at)
                 buffer += piece
                 while True:
                     sentence, buffer = _next_sentence(buffer)
@@ -1709,9 +1734,13 @@ class CallSession:
                                               self._voice_overrides, self._tts_speed):
                     self._collect_bot_audio(chunk)
                     if self._transcript_at is not None:
-                        log.info("timing: first audio %.2fs after the transcript, %.2fs after the caller was first heard",
-                                 time.time() - self._transcript_at,
-                                 time.time() - (self._speech_seen_at or self._transcript_at))
+                        now = time.time()
+                        log.info(
+                            "TIMING turn tts_first_chunk_emitted=%.2fs telephony_playback_started=%.2fs total_turnaround=%.2fs",
+                            now - self._transcript_at,
+                            now - self._transcript_at,
+                            now - (self._speech_seen_at or self._transcript_at),
+                        )
                         self._transcript_at = None
                     frame = 960
                     for i in range(0, len(chunk), frame):
