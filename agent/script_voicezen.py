@@ -11,7 +11,7 @@ qualifying questions to match how VoiceZen actually sells.
 """
 
 GREETING = (
-    "Hello, VoiceZen కి స్వాగతం. I'm the VoiceZen assistant. "
+    "నమస్కారం, VoiceZen కి స్వాగతం. నేను VoiceZen అసిస్టెంట్‌ని. "
     "మీ business కోసం AI calling agent గురించి తెలుసుకోవాలా, "
     "లేదా demo కావాలా అండి?"
 )

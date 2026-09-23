@@ -1224,6 +1224,13 @@ class CallSession:
         # speaking, which is what lines the two sides up on playback.
         self._bot_audio_segments: list[tuple[int, bytearray]] = []
         self._bot_audio_segment: bytearray | None = None
+        # Timing, so the gap a caller actually hears can be attributed
+        # rather than guessed at. A real call measured 3.8s of silence per
+        # turn while the logs only accounted for 1.6s of it, and the
+        # difference was invisible: it sits between the caller finishing and
+        # the transcript arriving, which nothing was recording.
+        self._speech_seen_at: float | None = None
+        self._transcript_at: float | None = None
         self._call_uuid = None
         self._from_number: str | None = None
         self._to_number: str | None = None
@@ -1445,6 +1452,7 @@ class CallSession:
     async def _on_speech_start(self):
         """Sarvam VAD says the caller started talking. If the caller is still
         hearing audio, this is a barge-in: flush it."""
+        self._speech_seen_at = time.time()
         if not self.playing:
             return
         log.info("barge-in: clearing playback")
@@ -1490,6 +1498,10 @@ class CallSession:
         await self._handle_turn(text)
 
     async def _handle_turn(self, text: str):
+        self._transcript_at = time.time()
+        if self._speech_seen_at:
+            log.info("timing: transcript %.2fs after speech was first heard",
+                     self._transcript_at - self._speech_seen_at)
         log.info("caller: %s", text)
         async with self._turn_lock:
             self.messages.append({"role": "user", "content": text})
@@ -1587,6 +1599,11 @@ class CallSession:
                 async for chunk in synthesize(self.http, item, self._tts_language,
                                               self._voice_overrides, self._tts_speed):
                     self._collect_bot_audio(chunk)
+                    if self._transcript_at is not None:
+                        log.info("timing: first audio %.2fs after the transcript, %.2fs after the caller was first heard",
+                                 time.time() - self._transcript_at,
+                                 time.time() - (self._speech_seen_at or self._transcript_at))
+                        self._transcript_at = None
                     frame = 960
                     for i in range(0, len(chunk), frame):
                         self.playing = True
