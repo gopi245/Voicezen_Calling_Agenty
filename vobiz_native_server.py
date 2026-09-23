@@ -2220,6 +2220,30 @@ class CallSession:
                 "చెప్తారు -- ఇదే number కి call చేయమంటారా?"
                 "\nOnce a caller has asked for the price twice, do not ask for "
                 "their business name or other details at all."
+                "\n\nStrict rules -- follow every one on every reply:"
+                "\n1. Ask at most ONE question per reply, and put it last. Never "
+                "put two questions in one reply. Nothing comes after the question."
+                "\n2. If the caller asked you something, answer it in this reply "
+                "first. Never skip their question to ask for their name or details. "
+                "If they ask the same thing again, your answer wasn't clear: explain "
+                "it again more simply, with an example, and do NOT ask for their "
+                "name in that reply. Example -- Caller: \"VoiceZen ఎలా పనిచేస్తుంది?\" "
+                "You: \"మీ number కి call వస్తే, మా AI agent మీ బదులు మాట్లాడుతుంది "
+                "అండి. Customer ఏం అడిగినా answer చేసి, వాళ్ల details మీకు WhatsApp "
+                "లో పంపిస్తుంది. మీది ఏ business అండి?\""
+                "\n3. Ask for the caller's name at most twice in the whole call. If "
+                "they still haven't given it, stop asking and move on to their "
+                "business instead."
+                "\n4. Never ask the same question in two replies in a row."
+                "\n5. If what you heard makes no sense for the conversation, reply "
+                "only: \"సారీ అండి, సరిగ్గా వినపడలేదు, ఇంకోసారి చెప్తారా?\" -- "
+                "don't agree with it (no \"అవునా అండి\") or move on."
+                "\n6. Write every number in Telugu words (\"పది వేల నుంచి ఇరవై "
+                "వేల\", \"వంద\"), never as digits (\"10\", \"20\") or with letters "
+                "(\"10k\")."
+                "\n7. Only end the call after the caller says goodbye, thanks, or "
+                "that they're not interested -- and always say a short goodbye "
+                "first (e.g. \"థాంక్స్ అండి, బై!\"), never end silently."
                 "\n\nOnce the caller has confirmed the callback number, stop "
                 "asking questions. Thank them and say the team will call, e.g. "
                 "\"థాంక్స్ అండి, మా team త్వరలో ఇదే number కి call చేస్తారు.\" "
@@ -2573,8 +2597,16 @@ class CallSession:
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
+        # VOICEZEN TEST -- one question per reply, enforced here rather than
+        # trusted to the model: call 996 on gpt-oss-120b spoke four questions
+        # run together as one 15-second reply. Once a question has been
+        # spoken the rest of the reply is dropped unsaid, and the history
+        # keeps only what the caller actually heard.
+        said: list[str] = []
+        asked = False
+        gen = stream(self.http, self.messages, model)
         try:
-            async for piece in stream(self.http, self.messages, model):
+            async for piece in gen:
                 full += piece
                 if buffer == '' and full == piece:
                     log.info("TIMING turn llm_first_token=%.2fs after transcript",
@@ -2587,11 +2619,26 @@ class CallSession:
                     say = sentence.replace(END_MARKER, "").strip()
                     if say:
                         spoken_any = True
+                        said.append(say)
                         await queue.put(say)
+                        if not self._legacy_engine and say.endswith("?"):
+                            asked = True
+                            break
+                if asked:
+                    # Stops the model's response now rather than leaving it
+                    # streaming, unread, until it finishes on its own.
+                    await gen.aclose()
+                    break
             tail = buffer.replace(END_MARKER, "").strip()
-            if tail:
+            if tail and not asked:
                 spoken_any = True
+                said.append(tail)
                 await queue.put(tail)
+            if asked:
+                rest = (full[len(" ".join(said)):] if full.startswith(" ".join(said)) else buffer).replace(END_MARKER, "").strip()
+                if rest:
+                    log.info("dropped the rest of the reply after its question: %r", rest[:200])
+                full = " ".join(said)
         except Exception:
             if not spoken_any:
                 # Nothing was said, so the fallback can safely say it all.
