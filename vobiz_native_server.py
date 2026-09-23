@@ -372,7 +372,26 @@ def _is_minor(text: str) -> bool:
     return _is_backchannel(text) or len(_words(text)) <= 1
 
 
-def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool) -> bool:
+# VOICEZEN TEST -- what a caller says when they are done: goodbye, thanks,
+# or a clear "not interested". Call 994: gpt-oss-120b ended the call right
+# after answering "what is VoiceZen?", with the caller mid-enquiry. On
+# VoiceZen the model may only hang up after the caller has said one of these.
+_GOODBYE_PATTERN = re.compile(
+    "|".join([
+        r"\bbye\b", r"\bbyee\b", r"good ?bye", r"\bthank", r"\bthanks\b", r"\btq\b", r"that'?s all",
+        r"not interested", r"no need", r"call later", r"\bok bye",
+        "బై", "బాయ్", "థాంక్", "ధన్యవాద", "ఉంటాను", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
+        "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ",
+    ]),
+    re.IGNORECASE,
+)
+
+
+def _caller_said_goodbye(text: str | None) -> bool:
+    return bool(text) and bool(_GOODBYE_PATTERN.search(text))
+
+
+def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool, last_caller: str | None = None) -> bool:
     """True if a reply carrying END_MARKER should actually hang up.
 
     VOICEZEN TEST -- a real Groq reply attached END_MARKER to a message
@@ -387,6 +406,9 @@ def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool) -> bool:
         return False
     if not legacy and spoken.rstrip().endswith("?"):
         log.warning("bot reply ended in a question but also carried END_CALL -- ignoring the marker")
+        return False
+    if not legacy and not _caller_said_goodbye(last_caller):
+        log.warning("END_CALL but the caller never said goodbye (%r) -- ignoring the marker", last_caller)
         return False
     return True
 
@@ -2513,11 +2535,15 @@ class CallSession:
             return
         self.messages.append({"role": "assistant", "content": reply})
         spoken = reply.replace(END_MARKER, "").strip()
-        end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine)
+        end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine, self._last_caller_words())
         log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
         self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call, turn=turn))
         if turn is not None:
             turn["speak_task"] = self._speak_task
+
+    def _last_caller_words(self) -> str | None:
+        """What the caller said most recently, for the goodbye check."""
+        return next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), None)
 
     async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None,
                            turn: dict | None = None):
@@ -2579,7 +2605,7 @@ class CallSession:
 
         self.messages.append({"role": "assistant", "content": full})
         spoken_full = full.replace(END_MARKER, "").strip()
-        end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine)
+        end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
         log.info("bot: %s%s", spoken_full, "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up after it if
         # the reply asked for the call to end.
