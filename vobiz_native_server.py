@@ -31,6 +31,7 @@ import io
 import json
 import logging
 import os
+import re
 import struct
 import sys
 import time
@@ -756,6 +757,47 @@ def resolve_voice(language: str | None, overrides: dict | None = None) -> tuple[
 # Raya returns 24kHz, so the agent's audio is resampled down before it can be
 # mixed into the caller's timeline.
 
+# ------------------------------------------------------- how words are said
+#
+# Raya reads Latin script with the pronunciation rules of whatever language
+# it was asked to speak, so a brand name written in English comes out wrong
+# in the middle of a Telugu sentence: 'VoiceZen' was heard on a real call as
+# 'vaayis ven'. The same problem was already found and fixed for campaign
+# greetings (see _BUSINESS_NAME_TRANSLITERATIONS), but that covers one
+# template only -- an ordinary client's greeting and everything the model
+# writes went straight to the voice untouched.
+#
+# Doing it here, just before synthesis, covers every path at once: the fixed
+# greeting, the model's replies, and any script. Nothing upstream has to
+# remember to spell a name phonetically, and the call scripts stay untouched.
+#
+# Only add a word here when the voice genuinely says it wrong. Telugu
+# speakers say 'business', 'demo' and 'agent' in English and expect to hear
+# them that way -- rewriting those would sound stranger than leaving them.
+_SPOKEN_AS = {
+    'te': {'voicezen': 'వాయిస్‌జెన్', 'gundusoodhi': 'గుండుసూది'},
+    'hi': {'voicezen': 'वॉइसज़ेन'},
+    'ta': {'voicezen': 'வாய்ஸ்ஜென்'},
+}
+
+_BOUNDARY = chr(92) + 'b'
+
+_SPOKEN_AS_PATTERNS = {
+    # chr(92) is a backslash. Written this way because the escape gets
+    # mangled before it reaches the file, and a literal backspace here
+    # silently matches nothing at all.
+    lang: [(re.compile(_BOUNDARY + re.escape(word) + _BOUNDARY, re.IGNORECASE), said)
+           for word, said in table.items()]
+    for lang, table in _SPOKEN_AS.items()
+}
+
+
+def say_as_spoken(text: str, language: str) -> str:
+    """Rewrites words the voice mispronounces into the script it reads right."""
+    for pattern, said in _SPOKEN_AS_PATTERNS.get(language, []):
+        text = pattern.sub(said, text)
+    return text
+
 def _resample_24k_to_16k(pcm: bytes) -> bytes:
     """S16LE mono, 24kHz -> 16kHz."""
     if not pcm:
@@ -818,6 +860,7 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     speaker to read Hindi gives Telugu pronunciation of Hindi text at best.
     RAYA_VOICES maps each language to a voice that actually speaks it.
     """
+    text = say_as_spoken(text, language)
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
     rate = speed if speed in SELECTABLE_SPEEDS else 1
     # ADMIN -- true only when an admin-chosen voice or speed is in play.
