@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 import struct
 import sys
 import time
@@ -354,6 +355,26 @@ _CONNECTOR_WORDS = {
     "అంటే", "అది", "అయితే", "ఆ", "మరి", "ఇంకా", "కానీ", "ఎందుకంటే",
     "and", "so", "but", "like", "uh", "um", "means",
 }
+
+
+_TELUGU_DIGIT_WORDS = ["సున్నా", "ఒకటి", "రెండు", "మూడు", "నాలుగు",
+                       "ఐదు", "ఆరు", "ఏడు", "ఎనిమిది", "తొమ్మిది"]
+_LONG_NUMBER = re.compile(r"[0-9౦-౯][0-9౦-౯\s-]{5,}[0-9౦-౯]")
+
+
+def _speak_phone_digits(text: str) -> str:
+    """Phone numbers and pincodes (seven digits or more), read digit by digit.
+
+    Call 1001: gpt-oss-20b read a callback number back as Telugu numerals
+    (౯౪౯౩...), which the TTS can't say clearly. Only long runs are touched,
+    so an amount like "200" is left for the model to say as a number.
+    """
+    def words(m):
+        ds = [c for c in m.group(0) if not c.isspace() and c != "-"]
+        if len(ds) < 7:
+            return m.group(0)
+        return " ".join(_TELUGU_DIGIT_WORDS[int(unicodedata.digit(c))] for c in ds)
+    return _LONG_NUMBER.sub(words, text)
 
 
 def _ends_mid_thought(text: str) -> bool:
@@ -2530,6 +2551,8 @@ class CallSession:
                     if not sentence:
                         break
                     say = sentence.replace(END_MARKER, "").strip()
+                    if say and not self._legacy_engine:
+                        say = _speak_phone_digits(say)
                     if say:
                         spoken_any = True
                         said.append(say)
@@ -2543,6 +2566,8 @@ class CallSession:
                     await gen.aclose()
                     break
             tail = buffer.replace(END_MARKER, "").strip()
+            if tail and not self._legacy_engine:
+                tail = _speak_phone_digits(tail)
             if tail and not asked:
                 spoken_any = True
                 said.append(tail)
