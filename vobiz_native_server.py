@@ -276,6 +276,16 @@ STT_PROMPT = (
     "వీధి, ఊరు, జిల్లా, రూపాయలు, ఆరు నెలలు, ఏడాది, నెలవారీ, వార్షిక"
 )
 
+# Gundusoodi only -- the shared list above plus the address words call 1102
+# lost: "డాష్" came through as "డాసెస్"/"డాస్", "MTC పాలెం" as "ఎంటిసి
+# పార్లమెంట్", "విశాఖపట్నం" as "ఇది శాఖ పార్ట్". Kept separate so the other
+# clients on STT_PROMPT are unchanged.
+STT_PROMPT_GUNDUSOODI = STT_PROMPT + (
+    ", డాష్, స్లాష్, పాలెం, నగర్, కాలనీ, వీధి పేరు, అపార్ట్‌మెంట్, "
+    "విశాఖపట్నం, శ్రీకాకుళం, విజయనగరం, విజయవాడ, గుంటూరు, నెల్లూరు, కాకినాడ, "
+    "రాజమండ్రి, తిరుపతి, హైదరాబాద్, సున్నా, డబల్"
+)
+
 # VOICEZEN TEST -- VoiceZen's own vocabulary. Until now VoiceZen calls were
 # biased toward Gundusoodi's magazine words above, and "ప్లాన్స్" (plans)
 # came through as "ప్లాంట్స్" (plants) on three separate real calls.
@@ -2182,7 +2192,9 @@ class CallSession:
         self.messages = [{"role": "system", "content": instructions}]
 
         if self._legacy_engine:
-            await self.stt.connect(self._stt_language, STT_PROMPT)
+            await self.stt.connect(
+                self._stt_language,
+                STT_PROMPT_GUNDUSOODI if (self.client or {}).get("client_id") == "gundusoodi" else STT_PROMPT)
         # Recorded in history immediately, not after _speak() finishes -- a
         # real call showed the bug this avoids: the caller's first reply
         # arrived before this line existed, so Gemini's context had no
