@@ -276,6 +276,104 @@ STT_PROMPT = (
     "వీధి, ఊరు, జిల్లా, రూపాయలు, ఆరు నెలలు, ఏడాది, నెలవారీ, వార్షిక"
 )
 
+# ---------------------------------------------------------------------------
+# Modular script -- send only the sections a call needs.
+#
+# Every reply re-sends the whole system prompt, so sections the caller never
+# reaches (ordering, payment complaints, address change...) are paid for on
+# every turn. For clients listed in MODULAR_SCRIPT_CLIENTS the script is split
+# at its "# N." headers: the core goes on every reply, each module is added
+# the first time the conversation points at it and then stays for the call.
+# If the model needs something that isn't loaded it answers only
+# MODULE_MARKER; the server then switches that call to the full script and
+# asks again, before anything is spoken. Three modules loaded -> full script.
+# Remove the client from the env var to go back to the full script.
+# ---------------------------------------------------------------------------
+MODULAR_SCRIPT_CLIENTS = {c.strip() for c in os.getenv("MODULAR_SCRIPT_CLIENTS", "").split(",") if c.strip()}
+MODULE_MARKER = "[[NEED]]"
+
+# client_id -> module -> (section numbers, caller-text pattern, bot-text pattern)
+SCRIPT_MODULES = {
+    "gundusoodi": {
+        "ORDER": (("7", "8"),
+                  r"ప్రింట్|ప్రింటు|నెలలు|నెలల|ఏడాది|సంవత్సరం|ఆర్డర్|సబ్‌స్క్ర|సబ్స్క్ర|చిరునామా|అడ్రస్|కావాలి",
+                  r"ఏది కావాలో|చిరునామా|అడ్రస్"),
+        "DIGITAL": (("8B",),
+                    r"డిజిటల్|డిజిటల|నెలవారీ|వార్షిక|పీడీఎఫ్|పిడిఎఫ్|ఆన్‌లైన్|ఆన్లైన్",
+                    r"ముప్పై తొమ్మిది"),
+        "PAYMENT": (("9",),
+                    r"పేమెంట్|పేమెంటు|డబ్బు|కట్ అయ్య|కన్ఫర్మ|పే చేశ|పే చేసా|కట్టాను|కట్టేశా",
+                    None),
+        "NOT_ARRIVED": (("10",),
+                        r"రాలేదు|అందలేదు|రావట్లేదు|రావడం లేదు|ఇంకా రాలే",
+                        None),
+        "ADDRESS_CHANGE": (("7", "8", "11"),
+                           r"మారాను|మారిపోయా|మార్చాలి|మార్చండి|మార్చుకో|వేరే ఊరు|కొత్త అడ్రస్|అడ్రస్ మార్",
+                           None),
+    },
+}
+
+_SECTION_HEADER = re.compile(r"^# (\d+[A-Z]?)\.", re.M)
+
+
+def _split_script(instructions: str):
+    """(text before the first "# N." header, {section number: its text})."""
+    heads = list(_SECTION_HEADER.finditer(instructions))
+    if not heads:
+        return instructions, {}
+    sections = {}
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(instructions)
+        sections[m.group(1)] = instructions[m.start():end]
+    return instructions[:heads[0].start()], sections
+
+
+class ModularScript:
+    """Builds the system prompt for one call from the sections it has needed."""
+
+    def __init__(self, client_id: str, instructions: str):
+        self.full = instructions
+        self.modules = SCRIPT_MODULES[client_id]
+        self.preamble, self.sections = _split_script(instructions)
+        in_modules = {n for secs, _, _ in self.modules.values() for n in secs}
+        self.core = [n for n in self.sections if n not in in_modules]
+        self.active = set()
+        self.use_full = not self.sections
+
+    def update(self, caller_text: str, last_bot_text: str) -> list:
+        """Add modules the latest turn points at; returns the newly added ones."""
+        if self.use_full:
+            return []
+        added = []
+        for name, (_, caller_pat, bot_pat) in self.modules.items():
+            if name in self.active:
+                continue
+            if re.search(caller_pat, caller_text or "") or (
+                    bot_pat and re.search(bot_pat, last_bot_text or "")):
+                self.active.add(name)
+                added.append(name)
+        if len(self.active) >= 3:
+            self.use_full = True
+        return added
+
+    def switch_to_full(self):
+        self.use_full = True
+
+    def prompt(self) -> str:
+        if self.use_full:
+            return self.full
+        wanted = set(self.core)
+        for name in self.active:
+            wanted.update(self.modules[name][0])
+        missing = [n for n in self.modules if n not in self.active]
+        body = self.preamble + "".join(self.sections[n] for n in self.sections if n in wanted)
+        if missing:
+            body += ("\n# NOT LOADED\nInstructions for these are not loaded right now: "
+                     + ", ".join(m.replace("_", " ").lower() for m in missing)
+                     + f". If the caller needs one of them, reply with exactly {MODULE_MARKER} and nothing else.\n")
+        return body
+
+
 # Gundusoodi only -- the shared list above plus the address words call 1102
 # lost: "డాష్" came through as "డాసెస్"/"డాస్", "MTC పాలెం" as "ఎంటిసి
 # పార్లమెంట్", "విశాఖపట్నం" as "ఇది శాఖ పార్ట్". Kept separate so the other
@@ -2190,6 +2288,14 @@ class CallSession:
         # per reply, pricing, mishearing, endings) live in script_voicezen.py,
         # kept short because the whole script is re-read on every reply.
         self.messages = [{"role": "system", "content": instructions}]
+        # Modular script (see ModularScript) -- only for clients switched on.
+        self._modular = None
+        cid = (self.client or {}).get("client_id")
+        if cid in MODULAR_SCRIPT_CLIENTS and cid in SCRIPT_MODULES:
+            self._modular = ModularScript(cid, instructions)
+            self.messages[0]["content"] = self._modular.prompt()
+            log.info("modular script for '%s': core %d of %d chars",
+                     cid, len(self.messages[0]["content"]), len(instructions))
 
         if self._legacy_engine:
             await self.stt.connect(
@@ -2213,6 +2319,50 @@ class CallSession:
                 self.stt = CartesiaSTT(self._on_transcript, self._on_speech_start,
                                        self._on_detected_language)
             await self.stt.connect(self._stt_language, STT_PROMPT_VOICEZEN)
+
+    def _modular_stream(self, inner):
+        """Wraps a model stream: loads the sections this turn needs first, and
+        if the model answers MODULE_MARKER, switches the call to the full
+        script and asks again -- the marker itself is never spoken."""
+        ms = self._modular
+
+        async def again(http, messages, model):
+            ms.switch_to_full()
+            messages[0]["content"] = ms.prompt()
+            log.info("modular script: model asked for more -> full script")
+            async for p in inner(http, messages, model):
+                yield p.replace(MODULE_MARKER, "")
+
+        async def stream(http, messages, model):
+            caller = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+            bot = next((m["content"] for m in reversed(messages) if m["role"] == "assistant"), "")
+            added = ms.update(caller, bot)
+            if added:
+                log.info("modular script: loaded %s%s", ",".join(added),
+                         " -> full script" if ms.use_full else "")
+            messages[0]["content"] = ms.prompt()
+            head, checked = "", False
+            gen = inner(http, messages, model)
+            async for piece in gen:
+                if checked:
+                    yield piece.replace(MODULE_MARKER, "")
+                    continue
+                head += piece
+                stripped = head.lstrip()
+                if len(stripped) < len(MODULE_MARKER) and MODULE_MARKER.startswith(stripped):
+                    continue                      # could still be the marker
+                checked = True
+                if stripped.startswith(MODULE_MARKER):
+                    await gen.aclose()
+                    async for p in again(http, messages, model):
+                        yield p
+                    return
+                yield head.replace(MODULE_MARKER, "")
+            if not checked and head.strip():
+                # The whole reply was a (possibly cut-off) marker.
+                async for p in again(http, messages, model):
+                    yield p
+        return stream
 
     async def on_media(self, pcm16_b64: str):
         raw = base64.b64decode(pcm16_b64)
@@ -2539,6 +2689,8 @@ class CallSession:
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
+        if getattr(self, "_modular", None) is not None:
+            stream = self._modular_stream(stream)
         # VOICEZEN TEST -- VOICEZEN_LLM names a Gemini model to use for
         # VoiceZen instead of Groq, without touching LLM_MODEL (Gundusoodi's).
         if not self._legacy_engine and VOICEZEN_LLM.startswith("gemini"):
