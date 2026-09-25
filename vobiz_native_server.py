@@ -2082,6 +2082,16 @@ class CallSession:
             instructions = CAMPAIGN_TEMPLATE.format(**self._campaign)
             greeting = campaign_greeting(self._campaign)
             language_name = self._campaign.get("language") or "English"
+            # ADMIN -- a browser test of a client's call script from the
+            # dashboard's script page: run exactly the greeting and
+            # instructions on screen, in the script's language. Test-only;
+            # no phone line, no minutes check, not logged or billed.
+            if self._campaign.get("script_test"):
+                instructions = self._campaign.get("script_instructions") or instructions
+                greeting = self._campaign.get("script_greeting") or greeting
+                lang = (self._campaign.get("language") or "te").split("-")[0]
+                self._stt_language = {"en": "en-IN", "hi": "hi-IN"}.get(lang, "te-IN")
+                self._tts_language = lang if lang in ("en", "hi") else "te"
             # Both TTS and STT stay on the __init__ defaults (te / te-IN) for
             # now, matching each other, until Raya's TTS actually supports a
             # language other than Telugu -- Raya returned HTTP 422 for "en"
@@ -2107,7 +2117,8 @@ class CallSession:
             campaign_customer = self._campaign.get("customer_id")
             if campaign_customer and not dial_from_for_customer(campaign_customer):
                 self._vobiz_auth = vobiz_auth(await lookup_client_in_db(customer_id=campaign_customer))
-            asyncio.create_task(self._start_vobiz_recording())
+            if not self._campaign.get("script_test"):  # no phone call to record
+                asyncio.create_task(self._start_vobiz_recording())
         else:
             # ADMIN -- a number missing from clients_registry.py may belong to
             # a client added from the admin dashboard. Asked only for unknown
@@ -2154,7 +2165,8 @@ class CallSession:
             if not self._campaign:
                 other_party = self._from_number if self._direction != "outbound" else self._to_number
                 config_task = asyncio.create_task(fetch_agent_config(customer_id, _to_e164(other_party)))
-            allowed = await check_customer_minutes(customer_id) if customer_id else True
+            script_test = bool(self._campaign and self._campaign.get("script_test"))
+            allowed = await check_customer_minutes(customer_id) if customer_id and not script_test else True
         if not allowed:
             log.warning("call blocked: customer %s has no minutes remaining", customer_id)
             if config_task is not None:
@@ -2959,7 +2971,7 @@ class CallSession:
         # fallback so a call is never left with no audio at all.
         recording_format = "wav"
         recording_b64 = None
-        if self._campaign:
+        if self._campaign and not self._campaign.get("script_test"):
             fetched = await self._fetch_vobiz_recording()
             if fetched:
                 recording_b64, recording_format = fetched
@@ -3075,6 +3087,9 @@ class CallSession:
         customer is already known directly (campaigns.customer_id), so this
         skips the dialled-number lookup entirely rather than trying to force
         a campaign call through a path built for a client's own number."""
+        if self._campaign.get("script_test"):
+            log.info("script test call finished (%.0fs) -- not logged or billed", duration)
+            return
         if self._campaign.get("is_test"):
             await self._report_test_call(duration, transcript)
             return
