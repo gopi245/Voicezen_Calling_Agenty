@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import functools
 import base64
 import importlib
 import io
@@ -120,6 +121,13 @@ SELECTABLE_LLM_MODELS = {
     "gemini-3.5-flash": {"no_thinking": True},
     "gemini-3.6-flash": {"no_thinking": True},
     "gemini-3.7-flash": {"no_thinking": True},
+    # ADMIN -- Groq models any client can be given from the dashboard's AI
+    # settings (before 2026-09-25 only VoiceZen's line ran on Groq). A turn
+    # that Groq can't answer falls back to Gemini (LLM_MODEL), as VoiceZen's
+    # does, so a Groq outage costs one slow reply, never a silent call.
+    "openai/gpt-oss-20b": {"provider": "groq"},
+    "openai/gpt-oss-120b": {"provider": "groq"},
+    "qwen/qwen3.6-27b": {"provider": "groq"},
 }
 
 # Public wss:// URL for this service (sslip.io -- no DNS setup, Caddy issues
@@ -1419,7 +1427,10 @@ async def groq_stream(session: aiohttp.ClientSession, messages: list[dict], mode
         "max_tokens": LLM_MAX_TOKENS,
         "temperature": 0.2,
         "stream": True,
-        "reasoning_effort": GROQ_REASONING_EFFORT,
+        # VoiceZen's own model keeps its configured effort; a model chosen for
+        # another client gets its family's default (Qwen: thinking off).
+        "reasoning_effort": GROQ_REASONING_EFFORT if model == GROQ_MODEL
+        else ("none" if model.startswith("qwen/") else "low"),
     }
     if model.startswith("qwen/"):
         # Qwen writes any reasoning inline as <think>...</think> in the
@@ -1545,7 +1556,8 @@ async def groq_hedged_stream(session: aiohttp.ClientSession, messages: list[dict
                 t.cancel()
 
 
-async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model: str):
+async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model: str,
+                     groq_model: str | None = None):
     """The primary streaming path a call actually uses: Groq first, Gemini
     if Groq is unavailable or fails before producing anything. Mirrors
     llm_reply's own rule for a chosen model -- a bad or slow path costs
@@ -1565,7 +1577,7 @@ async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model
     if GROQ_API_KEY:
         produced_any = False
         try:
-            async for piece in groq_hedged_stream(session, messages, GROQ_MODEL):
+            async for piece in groq_hedged_stream(session, messages, groq_model or GROQ_MODEL):
                 produced_any = True
                 yield piece
             if produced_any:
@@ -1585,7 +1597,9 @@ def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None)
     client; if it isn't one of SELECTABLE_LLM_MODELS, or it fails, the reply
     comes from LLM_MODEL instead -- a bad setting costs one slow turn, never
     a silent call."""
-    chosen = model if model in SELECTABLE_LLM_MODELS else LLM_MODEL
+    # A Groq model isn't a Gemini model: this non-streaming path answers from
+    # Gemini's default instead of failing a request first.
+    chosen = model if model in SELECTABLE_LLM_MODELS and not SELECTABLE_LLM_MODELS[model].get("provider") else LLM_MODEL
     if chosen != LLM_MODEL:
         try:
             return _gemini_reply(messages, chosen, attempts=2)
@@ -2551,6 +2565,11 @@ class CallSession:
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
         # client streams from Gemini exactly as before Groq existed.
         stream = (llm_stream if not self._legacy_engine else gemini_stream)
+        # ADMIN -- a Groq model chosen for this client in the dashboard: Groq
+        # first, this client's Gemini default (LLM_MODEL) as the fallback.
+        if SELECTABLE_LLM_MODELS.get(model, {}).get("provider") == "groq":
+            stream = functools.partial(llm_stream, groq_model=model)
+            model = LLM_MODEL
         # VOICEZEN TEST -- VOICEZEN_LLM names a Gemini model to use for
         # VoiceZen instead of Groq, without touching LLM_MODEL (Gundusoodi's).
         if not self._legacy_engine and VOICEZEN_LLM.startswith("gemini"):
