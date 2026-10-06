@@ -1260,7 +1260,13 @@ def voice_language_for(text: str, requested: str) -> str:
 # "अंडी"). In an English or Hindi reply it is wrong to say, and its Telugu
 # letters also tipped voice_language_for into reading the whole English
 # sentence with the Telugu voice. A Telugu reply keeps it.
-_ANDI = re.compile(r"[ \t]*(?:అండి|अंडी|अंडि|ஆண்டி|\bandi\b)(?=[\s.,!?।]|$)", re.IGNORECASE)
+# Spellings seen or expected per script: Hindi/Marathi, Tamil (call 2330
+# said அங்கீ), Bengali (অ্যান্ডি), Kannada, Malayalam, Latin.
+_ANDI = re.compile(
+    r"[ \t]*(?:అండి|अंडी|अंडि|अण्डी|एंडी|அங்கீ|அங்கி|அண்டி|ஆண்டி|ஆண்டீ"
+    r"|অ্যান্ডি|আন্ডি|এন্ডি|ಅಂಡಿ|ആൻഡി|അണ്ടി|അൻഡി|\bandi\b)(?=[\s.,!?।]|$)",
+    re.IGNORECASE,
+)
 
 
 def drop_foreign_andi(text: str) -> str:
