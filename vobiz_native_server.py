@@ -1255,6 +1255,25 @@ def voice_language_for(text: str, requested: str) -> str:
                  best, best, requested)
     return best
 
+# VOICEZEN TEST -- the script's Telugu lines are full of అండి, and the model
+# carries it into replies in other languages ("Nice to meet you Ravi అండి",
+# "अंडी"). In an English or Hindi reply it is wrong to say, and its Telugu
+# letters also tipped voice_language_for into reading the whole English
+# sentence with the Telugu voice. A Telugu reply keeps it.
+_ANDI = re.compile(r"[ \t]*(?:అండి|अंडी|अंडि|ஆண்டி|\bandi\b)(?=[\s.,!?।]|$)", re.IGNORECASE)
+
+
+def drop_foreign_andi(text: str) -> str:
+    """`text` without అండి unless the rest of it has Telugu in it. Telugu
+    replies mix in English business words, so any Telugu letter counts."""
+    if not _ANDI.search(text):
+        return text
+    stripped = _ANDI.sub("", text)
+    if any(0x0C00 <= ord(ch) <= 0x0C7F for ch in stripped):
+        return text
+    return stripped
+
+
 def say_as_spoken(text: str, language: str) -> str:
     """Rewrites words the voice mispronounces into the script it reads right."""
     for pattern, said in _SPOKEN_AS_PATTERNS.get(language, []):
@@ -1363,6 +1382,7 @@ async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: 
     # every other client speaks the requested language and raw text exactly
     # as it did before either existed.
     if not legacy:
+        text = drop_foreign_andi(text)
         language = voice_language_for(text, language)
         text = say_as_spoken(text, language)
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
