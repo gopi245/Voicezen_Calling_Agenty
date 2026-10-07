@@ -63,6 +63,18 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("vobiz-native")
 
+# The container's own log is wiped on every redeploy, which lost the only
+# record of a call where a Tamil caller hung up after silence (2026-10-07).
+# A copy goes to logs/server.log, which the compose file keeps on the host
+# (./logs), rotated at 5 MB x 10 files. Skipped if the folder isn't there.
+_LOG_DIR = HERE / "logs"
+if _LOG_DIR.is_dir():
+    import logging.handlers
+    _fh = logging.handlers.RotatingFileHandler(_LOG_DIR / "server.log", maxBytes=5_000_000, backupCount=10,
+                                               encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(_fh)
+
 app = FastAPI()
 
 RAYA_API_KEY = os.environ["RAYA_API_KEY"]
@@ -104,6 +116,9 @@ GROQ_HEDGE_AFTER_S = float(os.getenv("GROQ_HEDGE_AFTER_S", "0.7"))
 # VOICEZEN TEST -- set to a Gemini model (e.g. gemini-3.1-flash-lite) to run
 # VoiceZen's replies on it instead of Groq. Unset = Groq, as before.
 VOICEZEN_LLM = os.getenv("VOICEZEN_LLM", "").strip()
+# VOICEZEN TEST -- how long the line may stay silent after a barge-in cut an
+# unheard reply before that question is answered anyway.
+REANSWER_AFTER_S = float(os.getenv("REANSWER_AFTER_S", "2.5"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "400"))
 
 # ADMIN -- the models the admin dashboard may pick per client, each tried on
@@ -2027,6 +2042,11 @@ class CallSession:
         # whole of a turn's sending, so the next turn's audio can only
         # follow it, never mix into it.
         self._speak_lock = asyncio.Lock()
+        # VOICEZEN TEST -- a caller turn whose reply was cut by a barge-in
+        # before the caller heard a word of it. Answered again rather than
+        # lost: a real call (2026-10-07) had two Tamil questions answered,
+        # both replies cut unheard, and the caller left after 7s of silence.
+        self._lost_turn_text: str | None = None
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
         # when the phone line will have finished playing everything sent to
@@ -2358,6 +2378,18 @@ class CallSession:
 
     async def _barge_in(self):
         log.info("barge-in: clearing playback")
+        if not self._legacy_engine:
+            ot = self._open_turn
+            now = time.time()
+            if (ot is not None and ot["task"] is not None and not ot["task"].done()
+                    and (ot["heard_at"] is None or ot["heard_at"] > now)):
+                # Cut before the caller heard any of it: take it out of the
+                # history and keep the question, to answer it again.
+                ot["rollback"] = True
+                ot["task"].cancel()
+                self._lost_turn_text = ot["text"]
+                log.info("barge-in cut an unheard reply -- will answer %r again", ot["text"])
+                asyncio.create_task(self._reanswer_if_silent())
         # clearAudio is the ONLY thing that stops audio already queued inside
         # Vobiz. Cancelling the task just stops us sending more, and by now
         # there is usually nothing left to send -- the whole utterance was
@@ -2469,20 +2501,44 @@ class CallSession:
         if self._legacy_engine:
             await self._handle_turn(text)
             return
+        lost, self._lost_turn_text = self._lost_turn_text, None
+        if lost:
+            # The caller's last question lost its reply to a barge-in. A bare
+            # "hello"/"ok" now means "I didn't hear you" -- answer the
+            # question; anything else is added to it.
+            text = lost if (_FILLER.match(text) or _is_backchannel(text) or _is_filler(text)) else f"{lost} {text}"
+            log.info("answering the cut question again: %r", text)
         prev = self._open_turn
         generating = prev is not None and prev["task"] is not None and not prev["task"].done()
         still_talking = self._line_free_at - time.time()
-        if _is_backchannel(text) and (generating or still_talking > 1.0):
+        if not lost and _is_backchannel(text) and (generating or still_talking > 1.0):
             # "Okay"/"Hmm" while the bot is mid-answer is listening, not a
             # new question. Under a second left, it's more likely an answer
             # to the question just asked, so it goes through as a turn.
             log.info("ignored %r: acknowledgement while the bot is still talking", text)
             return
+        self._start_turn(text)
+
+    def _start_turn(self, text: str) -> None:
         text = self._supersede_open_turn(text)
         turn = {"text": text, "msg_start": None, "heard_at": None,
                 "task": None, "speak_task": None, "rollback": False}
         self._open_turn = turn
         turn["task"] = asyncio.create_task(self._handle_turn(text, turn))
+
+    async def _reanswer_if_silent(self):
+        """VOICEZEN TEST -- after a barge-in cut an unheard reply: if the
+        caller doesn't go on to say anything real, answer the cut question
+        anyway instead of leaving the line silent."""
+        await asyncio.sleep(REANSWER_AFTER_S)
+        lost = self._lost_turn_text
+        ot = self._open_turn
+        busy = ot is not None and ot["task"] is not None and not ot["task"].done()
+        if not lost or self._pending or busy or self.playing:
+            return
+        self._lost_turn_text = None
+        log.info("line silent after a cut reply -- answering %r again", lost)
+        self._start_turn(lost)
 
     def _supersede_open_turn(self, text: str) -> str:
         """VOICEZEN TEST -- the caller said something new while the bot still

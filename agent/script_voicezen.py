@@ -6,9 +6,8 @@ every line here is paid for on every turn of every call.
 """
 
 GREETING = (
-    "నమస్కారం, VoiceZen కి స్వాగతం. నేను VoiceZen అసిస్టెంట్‌ని. "
-    "మీ business కోసం AI calling agent గురించి తెలుసుకోవాలా, "
-    "లేదా demo కావాలా అండి?"
+    "నమస్కారం, VoiceZen కి స్వాగతం. "
+    "AI calling agent గురించి తెలుసుకోవాలా, demo కావాలా అండి?"
 )
 
 INSTRUCTIONS = """You are VoiceZen's phone assistant (voicezentech.com). VoiceZen builds AI voice agents that answer a business's calls or call its leads back. The welcome is already said -- never repeat it.
