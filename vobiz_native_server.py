@@ -445,6 +445,14 @@ _ROMAN_HINDI = re.compile(
     r"\b(kya|hai|nahi|nahin|kaise|kitna|kitne|mujhe|mera|meri|aap|haan|theek|chahiye|bataiye|karo)\b", re.I)
 
 
+# "Hello", "ok", "yes" on their own say nothing about the caller's language:
+# a Tamil caller who says "Hello" mid-call still wants Tamil. A real call on
+# 2026-10-07 switched a Tamil speaker to English on exactly that.
+_FILLER = re.compile(
+    r"^\W*(hello+|hallo|helo|hi+|hey|ok+|okay|okk|yes|yeah|yup|no|haa+|ha|han|haan|hmm+|hm|umm|uh|sure|"
+    r"thanks|thank you|bye|alright|right|fine|good)\W*$", re.I)
+
+
 def _caller_language(text: str | None) -> str | None:
     if not text:
         return None
@@ -454,6 +462,10 @@ def _caller_language(text: str | None) -> str | None:
         return "Hindi"
     if re.search(r"[஀-௿]", text):
         return "Tamil"
+    if re.search(r"[ഀ-ൿ]", text):
+        return "Malayalam"
+    if re.search(r"[ಀ-೿]", text):
+        return "Kannada"
     letters = re.findall(r"[A-Za-z]+", text)
     if len(letters) >= 2 and not _ROMAN_TELUGU.search(text) and not _ROMAN_HINDI.search(text):
         return "English"
@@ -2597,7 +2609,12 @@ class CallSession:
         history unchanged."""
         if self._legacy_engine:
             return self.messages
-        lang = _caller_language(self._last_caller_words())
+        # The latest caller turn that isn't a lone "hello"/"ok" decides it.
+        lang = None
+        for m in reversed(self.messages):
+            if m["role"] == "user" and not _FILLER.match(m["content"] or ""):
+                lang = _caller_language(m["content"])
+                break
         if not lang:
             return self.messages
         return self.messages + [{"role": "system", "content": (
