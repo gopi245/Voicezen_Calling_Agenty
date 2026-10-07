@@ -465,7 +465,10 @@ _ROMAN_HINDI = re.compile(
 # 2026-10-07 switched a Tamil speaker to English on exactly that.
 _FILLER = re.compile(
     r"^\W*(hello+|hallo|helo|hi+|hey|ok+|okay|okk|yes|yeah|yup|no|haa+|ha|han|haan|hmm+|hm|umm|uh|sure|"
-    r"thanks|thank you|bye|alright|right|fine|good)\W*$", re.I)
+    r"thanks|thank you|bye|alright|right|fine|good|"
+    # The same words in Indian languages: a Tamil caller's "ശരി"/"சரி" switched
+    # a real call to Malayalam (2026-10-07).
+    r"సరే|సరి|అవును|ఓకే|హా|హలో|சரி|சரிங்க|ஆமா|ஆம்|ஹலோ|ശരി|ആ|ഹലോ|ठीक|ठीक है|हाँ|हां|हा|जी|अच्छा|हलो|हैलो)\W*$", re.I)
 
 
 def _caller_language(text: str | None) -> str | None:
