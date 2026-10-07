@@ -433,6 +433,33 @@ def _caller_said_goodbye(text: str | None) -> bool:
     return bool(text) and bool(_GOODBYE_PATTERN.search(text))
 
 
+# VOICEZEN TEST -- the caller's language, read from the words of their latest
+# turn, so the model is told outright which language to answer in. The script
+# alone wasn't enough: it is full of Telugu example lines, and a simulated
+# English caller got Telugu replies 8 times in 36 turns. Telugu typed in Latin
+# letters ("price entha") is left to the script rather than forced to English.
+_ROMAN_TELUGU = re.compile(
+    r"\b(entha|enta|enti|ento|emiti|kavali|kaavali|cheppandi|chepandi|andi|ledu|undi|unnaru|ela|ekkada|"
+    r"naa|maa|meeru|mee|nenu|sare|avunu|kaadu|vaddu|chestara|cheyandi|ivvandi)\b", re.I)
+_ROMAN_HINDI = re.compile(
+    r"\b(kya|hai|nahi|nahin|kaise|kitna|kitne|mujhe|mera|meri|aap|haan|theek|chahiye|bataiye|karo)\b", re.I)
+
+
+def _caller_language(text: str | None) -> str | None:
+    if not text:
+        return None
+    if re.search(r"[ఀ-౿]", text):
+        return "Telugu"
+    if re.search(r"[ऀ-ॿ]", text):
+        return "Hindi"
+    if re.search(r"[஀-௿]", text):
+        return "Tamil"
+    letters = re.findall(r"[A-Za-z]+", text)
+    if len(letters) >= 2 and not _ROMAN_TELUGU.search(text) and not _ROMAN_HINDI.search(text):
+        return "English"
+    return None
+
+
 def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool, last_caller: str | None = None) -> bool:
     """True if a reply carrying END_MARKER should actually hang up.
 
@@ -2547,7 +2574,7 @@ class CallSession:
         except Exception:
             log.exception("streaming reply failed -- falling back to a whole reply")
         try:
-            reply = await asyncio.to_thread(llm_reply, self.messages, 3, self._llm_model)
+            reply = await asyncio.to_thread(llm_reply, self._messages_for_llm(), 3, self._llm_model)
         except Exception:
             log.exception("llm failed")
             return
@@ -2562,6 +2589,20 @@ class CallSession:
     def _last_caller_words(self) -> str | None:
         """What the caller said most recently, for the goodbye check."""
         return next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), None)
+
+    def _messages_for_llm(self) -> list[dict]:
+        """The history sent to the model. For VoiceZen (the non-legacy
+        engine) a note naming the caller's language is added for this one
+        request -- never stored in the history. Every other client gets the
+        history unchanged."""
+        if self._legacy_engine:
+            return self.messages
+        lang = _caller_language(self._last_caller_words())
+        if not lang:
+            return self.messages
+        return self.messages + [{"role": "system", "content": (
+            f"The caller's latest message is in {lang}. Write this whole reply in {lang} only -- "
+            f"use the {lang} version of any example line; an example that exists only in Telugu must be fully translated into {lang}, not copied. Not a single sentence in another language.")}]
 
     async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None,
                            turn: dict | None = None):
@@ -2607,7 +2648,7 @@ class CallSession:
         # keeps only what the caller actually heard.
         said: list[str] = []
         asked = False
-        gen = stream(self.http, self.messages, model)
+        gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
                 full += piece
