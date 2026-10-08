@@ -2248,6 +2248,13 @@ class CallSession:
         # engine along with everyone but VoiceZen, until this is widened on
         # purpose.
         self._legacy_engine = not (self.client and self.client.get("client_id") == "voicezen")
+        # VOICEZEN TEST -- a dashboard "Demo Call" pitches VoiceZen, so it gets
+        # VoiceZen's engine too. On the legacy engine the first demo (2026-10-08)
+        # stopped itself 9 times in 27 s: the agent's own "నమస్కారంండి" came back
+        # as echo, was taken for the caller talking, and cut the reply. The
+        # VoiceZen engine confirms speech before stopping and ignores fillers.
+        if self._campaign and self._campaign.get("demo_call"):
+            self._legacy_engine = False
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         # VOICEZEN TEST -- answer() already started these (see there).
         prefetched = None
