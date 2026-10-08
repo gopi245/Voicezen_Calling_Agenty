@@ -19,27 +19,6 @@ from __future__ import annotations
 import os
 
 CLIENTS: dict[str, dict] = {
-    "+918065353946": {
-        "client_id": "gundusoodi",
-        "customer_id": 3,
-        "dial_from": "+918065353946",
-        "prompt_module": "script_gundusoodi",
-        # Pinned to Telugu deliberately -- auto-detect was tried on this line
-        # and lost: two real calls came back with confident, wrong-script
-        # transcripts (Hindi, Punjabi, Kannada) on 9 of ~19 turns, mostly on
-        # the short number-heavy phrases this script depends on, like a house
-        # number or a pincode. Accuracy on the address matters more here than
-        # serving a caller who opens in another language.
-        "stt_language": "te-IN",
-        "tts_language": "te",
-        "multilingual": False,
-        # Reuses the account already in .env -- Gundusoodi hasn't moved to
-        # its own dedicated Vobiz account, so there's nothing separate to
-        # point at yet. A client with their own account gets real values
-        # here instead.
-        "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
-        "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
-    },
     "+918071580257": {
         "client_id": "voicezen",
         # VoiceZen's own line, for enquiries from voicezentech.com.
@@ -65,6 +44,26 @@ CLIENTS: dict[str, dict] = {
         # order. Languages covered are whatever RAYA_VOICES has a voice for.
         "stt_language": "unknown",
         "tts_language": "te",
+        "multilingual": True,
+        "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
+        "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
+    },
+    # Gundusoodi's former voice number, moved to VoiceZen on 2026-10-08 at the
+    # owner's request (Gundusoodi keeps its WhatsApp number and history). Listed
+    # AFTER VoiceZen's main line on purpose: dial_from_for_customer returns the
+    # first match, so VoiceZen's outbound and demo calls keep going out as
+    # +918071580257.
+    "+918065353946": {
+        "client_id": "voicezen",
+        "customer_id": (
+            int(os.environ["VOICEZEN_CUSTOMER_ID"])
+            if os.getenv("VOICEZEN_CUSTOMER_ID", "").strip().isdigit()
+            else None
+        ),
+        "dial_from": "+918065353946",
+        "prompt_module": "script_voicezen_hi",
+        "stt_language": "unknown",
+        "tts_language": "hi",
         "multilingual": True,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
