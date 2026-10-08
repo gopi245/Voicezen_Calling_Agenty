@@ -273,7 +273,9 @@ STT_SAMPLE_RATE = 16000  # Vobiz inbound contentType we request; Sarvam recommen
 # worth more than any other change here. Override with TURN_DEBOUNCE_S if a
 # call starts replying to fragments again (that shows up as the bot
 # answering a half-sentence, or two replies for one thing the caller said).
-TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.65"))
+# 0.65 -> 0.35 on 2026-10-08 to cut ~0.3 s off every reply; _ends_mid_thought
+# still waits TRAILING_CONNECTOR_WAIT_S when a sentence stops mid-way.
+TURN_DEBOUNCE_S = float(os.getenv("TURN_DEBOUNCE_S", "0.35"))
 
 # A barge-in signal this early into our own playback is line noise, not
 # the caller -- see the note on _playback_started_at. 350ms is well under
@@ -288,6 +290,8 @@ BARGE_IN_CONFIRM_S = float(os.getenv("BARGE_IN_CONFIRM_S", "1.0"))
 # VOICEZEN TEST -- how long to wait when the caller trails off on "అంటే..."
 # before answering what they did say. See _ends_mid_thought.
 TRAILING_CONNECTOR_WAIT_S = float(os.getenv("TRAILING_CONNECTOR_WAIT_S", "1.0"))
+# VOICEZEN TEST -- see the welcome guard in _on_transcript.
+GREETING_GUARD_S = float(os.getenv("GREETING_GUARD_S", "1.5"))
 
 # Domain vocabulary. The brand name is consistently mis-heard on real calls
 # ("గుండు సోతి", "గుండుకో జ్ఞానం"), which is exactly the problem the production
@@ -469,6 +473,9 @@ _FILLER = re.compile(
     # The same words in Indian languages: a Tamil caller's "ശരി"/"சரி" switched
     # a real call to Malayalam (2026-10-07).
     r"సరే|సరి|అవును|ఓకే|హా|హలో|சரி|சரிங்க|ஆமா|ஆம்|ஹலோ|ശരി|ആ|ഹലോ|ठीक|ठीक है|हाँ|हां|हा|जी|अच्छा|हलो|हैलो)\W*$", re.I)
+
+
+_RARE_LANGUAGES = {"Kannada", "Malayalam"}
 
 
 def _caller_language(text: str | None) -> str | None:
@@ -2440,6 +2447,16 @@ class CallSession:
                 and time.time() < self._ignored_noise_until):
             log.info("transcript ignored: %r arrived in the same window as dismissed call-setup noise", text)
             return
+        # VOICEZEN TEST -- nothing said in the first moments of the welcome is
+        # the caller answering it: a real call (2026-10-08) had line noise
+        # transcribed as Kannada 0.5 s into the Hindi welcome, which cut the
+        # welcome and switched the call to Kannada.
+        if (not self._legacy_engine and not self._pending and self.playing
+                and self._playback_started_at is not None
+                and not any(m["role"] == "user" for m in self.messages)
+                and time.time() - self._playback_started_at < GREETING_GUARD_S):
+            log.info("ignored %r: heard in the first %.1fs of the welcome (line noise)", text, GREETING_GUARD_S)
+            return
         if not self._legacy_engine and not self._pending:
             timer = self._barge_timer
             waiting = timer is not None and not timer.done()
@@ -2680,6 +2697,10 @@ class CallSession:
         for m in reversed(self.messages):
             if m["role"] == "user" and not _FILLER.match(m["content"] or ""):
                 lang = _caller_language(m["content"])
+                # A short phrase in a language we rarely hear is more often
+                # misheard noise than a real caller: don't let it switch.
+                if lang in _RARE_LANGUAGES and len((m["content"] or "").split()) < 4:
+                    lang = None
                 break
         if not lang:
             return self.messages
