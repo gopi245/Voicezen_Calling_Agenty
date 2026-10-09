@@ -1435,6 +1435,38 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
         _TTS_CACHE.popitem(last=False)
 
 
+VOICEZEN_TTS_PROVIDER = os.getenv("VOICEZEN_TTS_PROVIDER", "raya").strip().lower()
+GOOGLE_TTS_API_KEY = os.getenv("GOOGLE_TTS_API_KEY", "").strip()
+GOOGLE_TTS_VOICE_SUFFIX = os.getenv("GOOGLE_TTS_VOICE_SUFFIX", "Standard-A")
+_GOOGLE_TTS_LANGS = {"te": "te-IN", "hi": "hi-IN", "en": "en-IN", "ta": "ta-IN", "kn": "kn-IN",
+                     "ml": "ml-IN", "mr": "mr-IN", "bn": "bn-IN", "gu": "gu-IN"}
+
+
+async def _synthesize_google(session: aiohttp.ClientSession, text: str, language: str) -> bytes | None:
+    """Whole-sentence Google Cloud TTS as raw S16LE PCM at TTS_SAMPLE_RATE, or
+    None on any failure (the caller then uses Raya)."""
+    lang = _GOOGLE_TTS_LANGS.get((language or "te").split("-")[0].lower(), "te-IN")
+    body = {"input": {"text": text},
+            "voice": {"languageCode": lang, "name": f"{lang}-{GOOGLE_TTS_VOICE_SUFFIX}"},
+            "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": TTS_SAMPLE_RATE}}
+    try:
+        async with session.post(
+            f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GOOGLE_TTS_API_KEY}",
+            json=body, timeout=aiohttp.ClientTimeout(total=6)) as r:
+            if r.status != 200:
+                log.warning("google tts %s failed (%s) -- using Raya", lang, r.status)
+                return None
+            audio = base64.b64decode((await r.json())["audioContent"])
+    except Exception as e:
+        log.warning("google tts %s error (%s) -- using Raya", lang, e)
+        return None
+    # LINEAR16 comes wrapped in a WAV header; the line wants bare PCM.
+    if audio[:4] == b"RIFF":
+        i = audio.find(b"data")
+        audio = audio[i + 8:] if i != -1 else audio[44:]
+    return audio
+
+
 async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: str = "te",
                            voice_overrides: dict | None = None, speed: float | None = None,
                            legacy: bool = False):
@@ -1462,6 +1494,16 @@ async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: 
         text = drop_foreign_andi(text)
         language = voice_language_for(text, language)
         text = say_as_spoken(text, language)
+    # VOICEZEN TEST -- Google Cloud Standard voices on VoiceZen's lines, being
+    # tried (2026-10-09) for a more natural sound. Raya stays the backup: any
+    # Google failure falls through to the Raya request below, mid-call.
+    if not legacy and VOICEZEN_TTS_PROVIDER == "google" and GOOGLE_TTS_API_KEY:
+        pcm = await _synthesize_google(session, text, language)
+        if pcm:
+            chunk = 9600  # 0.2 s at 24 kHz, 16-bit
+            for i in range(0, len(pcm), chunk):
+                yield pcm[i:i + chunk]
+            return
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
     rate = speed if speed in SELECTABLE_SPEEDS else 1
     # ADMIN -- true only when an admin-chosen voice or speed is in play.
