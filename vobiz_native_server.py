@@ -173,6 +173,13 @@ DEFAULT_COUNTRY_CODE = os.getenv("DEFAULT_COUNTRY_CODE", "91")
 # so one visitor can't turn it into an unbounded free conversation. Regular
 # Gundusoodi calls and scheduled/batch campaigns have no such limit.
 INSTANT_LEAD_TIME_LIMIT_SECONDS = int(os.getenv("INSTANT_LEAD_TIME_LIMIT_SECONDS", "120"))
+# VOICEZEN TEST -- a dashboard Demo Call needs room to finish a real demo;
+# website "Call me now" calls keep the 2-minute cap above.
+DEMO_CALL_TIME_LIMIT_SECONDS = int(os.getenv("DEMO_CALL_TIME_LIMIT_SECONDS", "240"))
+DEMO_CALL_NOTE = """
+
+THIS IS AN OUTBOUND DEMO CALL: the person asked VoiceZen for a demo call, and the opening line already introduced you as VoiceZen's AI assistant. Start by telling them in one or two short sentences what VoiceZen does, then follow the normal flow above (their name, business, calls a day, offer the free demo, confirm the callback on this same number once, then thank them and close). Never claim percentages or results you weren't told.
+Asked about plans, packages or prices (speech recognition often writes plans as "ప్లాంట్స్"/"plants" -- never mention plants): give the price line in their language (price depends on how many calls they get; our team calls with the exact price), then continue. Ask their name early, before the callback is confirmed."""
 INSTANT_LEAD_TIME_LIMIT_CLOSING = {
     "te": "మన సమయం అయిపోయింది అండి. మా team మీకు మళ్ళీ callback చేస్తుంది, ధన్యవాదాలు.",
     "hi": "हमारा समय पूरा हो गया है। हमारी टीम आपको दोबारा कॉल करेगी, धन्यवाद।",
@@ -2195,6 +2202,15 @@ class CallSession:
             # dashboard's script page: run exactly the greeting and
             # instructions on screen, in the script's language. Test-only;
             # no phone line, no minutes check, not logged or billed.
+            # VOICEZEN TEST -- a dashboard Demo Call runs VoiceZen's own tuned
+            # script (plans/price answer, mishearings, no over-promising, name
+            # and callback, closing), not the generic campaign template. The
+            # first demo on the template took "plans" for "plants", never
+            # answered the price, promised "100%" and repeated its last question.
+            if self._campaign.get("demo_call"):
+                module = importlib.import_module(
+                    "script_voicezen_hi" if (self._campaign.get("language") or "") == "Hindi" else "script_voicezen")
+                instructions = module.INSTRUCTIONS + DEMO_CALL_NOTE
             if self._campaign.get("script_test"):
                 instructions = self._campaign.get("script_instructions") or instructions
                 greeting = self._campaign.get("script_greeting") or greeting
@@ -3015,7 +3031,8 @@ class CallSession:
         deliberate wrap-up.
         """
         try:
-            await asyncio.sleep(INSTANT_LEAD_TIME_LIMIT_SECONDS)
+            await asyncio.sleep(DEMO_CALL_TIME_LIMIT_SECONDS if (self._campaign or {}).get("demo_call")
+                                else INSTANT_LEAD_TIME_LIMIT_SECONDS)
         except asyncio.CancelledError:
             return
         if self._done.is_set():
