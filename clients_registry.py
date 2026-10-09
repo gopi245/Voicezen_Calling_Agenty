@@ -64,6 +64,9 @@ CLIENTS: dict[str, dict] = {
         "prompt_module": "script_voicezen_hi",
         "stt_language": "unknown",
         "tts_language": "hi",
+        # Kept on Raya at the owner's request (2026-10-09) while Google voices
+        # are tried on the Telugu line.
+        "tts_provider": "raya",
         "multilingual": True,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),

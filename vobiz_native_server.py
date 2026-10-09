@@ -723,7 +723,8 @@ async def _warm_voicezen_greeting():
             check_customer_minutes(client.get("customer_id")) if client.get("customer_id") else asyncio.sleep(0),
         )
         async with aiohttp.ClientSession() as http:
-            async for _ in synthesize(http, greeting, client.get("tts_language") or "te"):
+            async for _ in synthesize(http, greeting, client.get("tts_language") or "te",
+                                      provider=client.get("tts_provider")):
                 pass
         log.info("voicezen greeting pre-generated")
     except Exception:
@@ -1411,15 +1412,15 @@ _TTS_CACHE_MAX_CHARS = 300
 
 async def synthesize(session: aiohttp.ClientSession, text: str, language: str = "te",
                      voice_overrides: dict | None = None, speed: float | None = None,
-                     legacy: bool = False):
+                     legacy: bool = False, provider: str | None = None):
     """_synthesize_raya, with finished audio kept for VoiceZen (see _TTS_CACHE).
     Only a synthesis that ran to the end is kept, so a reply cut off by a
     barge-in never leaves half a line in the cache."""
     if legacy or len(text) > _TTS_CACHE_MAX_CHARS:
-        async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy):
+        async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy, provider):
             yield chunk
         return
-    key = (text, language, tuple(sorted((voice_overrides or {}).items())), speed)
+    key = (text, language, tuple(sorted((voice_overrides or {}).items())), speed, provider)
     cached = _TTS_CACHE.get(key)
     if cached is not None:
         _TTS_CACHE.move_to_end(key)
@@ -1427,7 +1428,7 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
             yield chunk
         return
     chunks: list[bytes] = []
-    async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy):
+    async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy, provider):
         chunks.append(chunk)
         yield chunk
     _TTS_CACHE[key] = chunks
@@ -1469,7 +1470,7 @@ async def _synthesize_google(session: aiohttp.ClientSession, text: str, language
 
 async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: str = "te",
                            voice_overrides: dict | None = None, speed: float | None = None,
-                           legacy: bool = False):
+                           legacy: bool = False, provider: str | None = None):
     """Whole-turn Raya synthesis. Yields raw S16LE PCM chunks at TTS_SAMPLE_RATE.
 
     Same endpoint and F32LE->S16LE conversion as agent/tts_raya.py; ported here
@@ -1497,7 +1498,9 @@ async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: 
     # VOICEZEN TEST -- Google Cloud Standard voices on VoiceZen's lines, being
     # tried (2026-10-09) for a more natural sound. Raya stays the backup: any
     # Google failure falls through to the Raya request below, mid-call.
-    if not legacy and VOICEZEN_TTS_PROVIDER == "google" and GOOGLE_TTS_API_KEY:
+    # provider: a number's own choice (clients_registry "tts_provider"),
+    # else the VoiceZen-wide VOICEZEN_TTS_PROVIDER.
+    if not legacy and (provider or VOICEZEN_TTS_PROVIDER) == "google" and GOOGLE_TTS_API_KEY:
         pcm = await _synthesize_google(session, text, language)
         if pcm:
             chunk = 9600  # 0.2 s at 24 kHz, 16-bit
@@ -2101,6 +2104,9 @@ class CallSession:
         # whole of a turn's sending, so the next turn's audio can only
         # follow it, never mix into it.
         self._speak_lock = asyncio.Lock()
+        # VOICEZEN TEST -- this number's voice engine ("raya"/"google"); None
+        # = VOICEZEN_TTS_PROVIDER. Set from the registry in start().
+        self._tts_provider: str | None = None
         # VOICEZEN TEST -- a caller turn whose reply was cut by a barge-in
         # before the caller heard a word of it. Answered again rather than
         # lost: a real call (2026-10-07) had two Tamil questions answered,
@@ -2304,6 +2310,7 @@ class CallSession:
             self._stt_language = self.client.get("stt_language") or self._stt_language
             self._tts_language = self.client.get("tts_language") or self._tts_language
             self._follow_caller_language = bool(self.client.get("multilingual"))
+            self._tts_provider = self.client.get("tts_provider")
             log.info("serving client '%s' (%s call, identified by %s, stt=%s multilingual=%s)",
                       self.client["client_id"], self._direction, self._client_number,
                       self._stt_language, self._follow_caller_language)
@@ -2897,7 +2904,7 @@ class CallSession:
                     break
                 async for chunk in synthesize(self.http, item, self._tts_language,
                                               self._voice_overrides, self._tts_speed,
-                                              legacy=self._legacy_engine):
+                                              legacy=self._legacy_engine, provider=self._tts_provider):
                     self._collect_bot_audio(chunk)
                     if transcript_at is not None:
                         now = time.time()
@@ -2990,7 +2997,7 @@ class CallSession:
         try:
             async for chunk in synthesize(self.http, text, self._tts_language,
                                           self._voice_overrides, self._tts_speed,
-                                          legacy=self._legacy_engine):
+                                          legacy=self._legacy_engine, provider=self._tts_provider):
                 self._collect_bot_audio(chunk)
                 # ~20ms frames at 24kHz/16-bit mono = 960 bytes.
                 frame = 960
