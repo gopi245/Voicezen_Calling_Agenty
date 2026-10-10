@@ -2454,6 +2454,15 @@ class CallSession:
                 # real speech, and is dropped in _on_transcript.
                 self._ignored_noise_until = self._playback_started_at + (MIN_BARGE_IN_MS / 1000)
                 return
+        if (not self._legacy_engine and self._playback_started_at is not None
+                and not any(m["role"] == "user" for m in self.messages)
+                and time.time() - self._playback_started_at < GREETING_GUARD_S):
+            # VOICEZEN TEST -- a reflex "okay"/"hello" as the call picks up must
+            # not cut the welcome: a real call (2026-10-10) lost the welcome to
+            # an "Okay" 1.1 s in, so the caller never heard the demo question.
+            # Real speech that carries on is still handled once its words arrive.
+            log.info("sound in the first %.1fs of the welcome -- letting the welcome finish", GREETING_GUARD_S)
+            return
         if not self._legacy_engine:
             # VOICEZEN TEST -- don't stop on the sound alone. A real call was
             # cut off four times by "హ్మ్"/"ఓకే"/noise, losing the whole
