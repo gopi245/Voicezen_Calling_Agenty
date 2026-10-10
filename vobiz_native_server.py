@@ -2757,6 +2757,13 @@ class CallSession:
         history unchanged."""
         if self._legacy_engine:
             return self.messages
+        # A number fixed to one language (clients_registry "reply_language")
+        # always answers in it, whatever the caller -- or a mishearing -- says.
+        fixed = (self.client or {}).get("reply_language")
+        if fixed:
+            return self.messages + [{"role": "system", "content": (
+                f"This line speaks {fixed} only. Write this whole reply in {fixed}, whatever language the caller "
+                f"used; if they don't understand {fixed}, apologise briefly in {fixed} and keep it very simple.")}]
         # The latest caller turn that isn't a lone "hello"/"ok" decides it.
         lang = None
         for m in reversed(self.messages):

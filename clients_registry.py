@@ -62,12 +62,16 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918065353946",
         "prompt_module": "script_voicezen_hi",
-        "stt_language": "unknown",
+        # Hindi only, at the owner's request (2026-10-10): auto-detect turned a
+        # Hindi caller into Punjabi on a real call and the agent answered in
+        # Punjabi. Listening in hi-IN still understands English words.
+        "stt_language": "hi-IN",
         "tts_language": "hi",
+        "reply_language": "Hindi",
         # Kept on Raya at the owner's request (2026-10-09) while Google voices
         # are tried on the Telugu line.
         "tts_provider": "raya",
-        "multilingual": True,
+        "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
     },
