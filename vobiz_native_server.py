@@ -119,6 +119,16 @@ VOICEZEN_LLM = os.getenv("VOICEZEN_LLM", "").strip()
 # VOICEZEN TEST -- how long the line may stay silent after a barge-in cut an
 # unheard reply before that question is answered anyway.
 REANSWER_AFTER_S = float(os.getenv("REANSWER_AFTER_S", "2.5"))
+# VOICEZEN TEST -- see CallSession._silence_check.
+SILENCE_PROMPT_S = float(os.getenv("SILENCE_PROMPT_S", "6"))
+SILENCE_LINES = {  # (can you hear me?, closing)
+    "hi": ("जी, क्या आप मुझे सुन पा रहे हैं?",
+           "माफ़ कीजिए जी, आपकी आवाज़ नहीं आ रही है। कृपया थोड़ी देर बाद दोबारा कॉल करें, धन्यवाद।"),
+    "te": ("అండి, నా మాట వినిపిస్తోందా?",
+           "క్షమించండి అండి, మీ మాట వినిపించడం లేదు. దయచేసి కాసేపాగి మళ్ళీ కాల్ చేయండి, థాంక్స్."),
+    "en": ("Hello, can you hear me?",
+           "Sorry, I can't hear you. Please call again in a little while. Thank you."),
+}
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "400"))
 
 # ADMIN -- the models the admin dashboard may pick per client, each tried on
@@ -2112,6 +2122,9 @@ class CallSession:
         # lost: a real call (2026-10-07) had two Tamil questions answered,
         # both replies cut unheard, and the caller left after 7s of silence.
         self._lost_turn_text: str | None = None
+        # VOICEZEN TEST -- see _silence_check.
+        self._silence_token = 0
+        self._silence_prompts = 0
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
         # when the phone line will have finished playing everything sent to
@@ -2497,6 +2510,28 @@ class CallSession:
             self.playing = False
             self._awaiting_checkpoint = None
             log.info("playback finished: %s", name)
+            if not self._legacy_engine and not self._done.is_set():
+                self._silence_token += 1
+                asyncio.create_task(self._silence_check(self._silence_token, time.time()))
+
+    async def _silence_check(self, token: int, finished_at: float):
+        """VOICEZEN TEST -- the caller has said nothing since we finished
+        speaking: ask if they can hear us (twice), then close politely. A real
+        call (2026-10-10) sat in silence until the caller gave up -- their
+        audio was being lost on the line and the agent never said a word."""
+        await asyncio.sleep(SILENCE_PROMPT_S)
+        if (token != self._silence_token or self._done.is_set() or self.playing or self._pending
+                or (self._speech_seen_at or 0) > finished_at
+                or (self._open_turn is not None and self._open_turn["task"] is not None
+                    and not self._open_turn["task"].done())):
+            return
+        lines = SILENCE_LINES.get(self._tts_language, SILENCE_LINES["en"])
+        self._silence_prompts += 1
+        last = self._silence_prompts > 2
+        text = lines[1] if last else lines[0]
+        log.info("caller silent %.0fs after our last line -- %s", SILENCE_PROMPT_S, "closing" if last else "asking if they can hear")
+        self.messages.append({"role": "assistant", "content": text})
+        self._speak_task = asyncio.create_task(self._speak(text, end_call=last))
 
     async def _on_transcript(self, text: str):
         """Buffer the transcript and (re)start the debounce timer. Sarvam
@@ -2555,6 +2590,7 @@ class CallSession:
                 if self.playing:
                     await self._barge_in()
         log.info("caller (partial): %s", text)
+        self._silence_prompts = 0
         if not self._pending:
             self._first_fragment_at = time.time()
         self._pending.append(text)
