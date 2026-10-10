@@ -2795,6 +2795,20 @@ class CallSession:
         """What the caller said most recently, for the goodbye check."""
         return next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), None)
 
+    def _first_turn_note(self) -> list[dict]:
+        """VOICEZEN TEST -- the caller's very first words are only "hello"/"ok":
+        the model kept answering "How can I help you today?" (call 2764),
+        dropping the pitch. Say what to do for that one reply."""
+        users = [m for m in self.messages if m["role"] == "user"]
+        if len(users) != 1 or not _FILLER.match(users[0]["content"] or ""):
+            return []
+        if re.match(r"^\W*(hello+|hallo|helo|hi+|hey|హలో|हलो|हैलो|ஹலோ|ഹലോ)\W*$", users[0]["content"] or "", re.I):
+            how = ("They may not have heard the welcome: say hello back and repeat the welcome question in one short "
+                   "sentence (do they want to hear about the AI calling agent, or a free demo?).")
+        else:
+            how = "That is a yes to the welcome question: tell them in one short sentence what VoiceZen does, then ask their name."
+        return [{"role": "system", "content": f"The caller's first words were only \"{users[0]['content']}\". {how} Never reply \"How can I help you today?\"."}]
+
     def _messages_for_llm(self) -> list[dict]:
         """The history sent to the model. For VoiceZen (the non-legacy
         engine) a note naming the caller's language is added for this one
@@ -2802,13 +2816,14 @@ class CallSession:
         history unchanged."""
         if self._legacy_engine:
             return self.messages
+        note = self._first_turn_note()
         # A number fixed to one language (clients_registry "reply_language")
         # always answers in it, whatever the caller -- or a mishearing -- says.
         fixed = (self.client or {}).get("reply_language")
         if fixed:
             return self.messages + [{"role": "system", "content": (
                 f"This line speaks {fixed} only. Write this whole reply in {fixed}, whatever language the caller "
-                f"used; if they don't understand {fixed}, apologise briefly in {fixed} and keep it very simple.")}]
+                f"used; if they don't understand {fixed}, apologise briefly in {fixed} and keep it very simple.")}] + note
         # The latest caller turn that isn't a lone "hello"/"ok" decides it.
         lang = None
         for m in reversed(self.messages):
@@ -2820,8 +2835,8 @@ class CallSession:
                     lang = None
                 break
         if not lang:
-            return self.messages
-        return self.messages + [{"role": "system", "content": (
+            return self.messages + note
+        return self.messages + note + [{"role": "system", "content": (
             f"The caller's latest message is in {lang}. Write this whole reply in {lang} only -- "
             f"use the {lang} version of any example line; an example that exists only in Telugu must be fully translated into {lang}, not copied. Not a single sentence in another language.")}]
 
