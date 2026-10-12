@@ -2948,6 +2948,22 @@ class CallSession:
         return bool(last.endswith("?") or re.search(
             r"ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|ఏమిటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా", last))
 
+    def _asked_too_often(self, question: str) -> bool:
+        """This question was already asked twice in the call (clients with
+        repeat_guard); the qualification may be asked up to four times."""
+        if not (self.client or {}).get("repeat_guard"):
+            return False
+        key = re.sub(r"[\s?.!,।]+", " ", question).strip()
+        limit = 4 if "చదివార" in key else 2
+        n = 0
+        for m in self.messages:
+            if m["role"] != "assistant":
+                continue
+            q = re.split(r"(?<=[.!।])\s+", _strip_markers(m["content"] or "").strip())[-1]
+            if q.endswith("?") and re.sub(r"[\s?.!,।]+", " ", q).strip() == key:
+                n += 1
+        return n >= limit
+
     def _offer_limit_reached(self) -> bool:
         """The connect offer has been made twice (clients with transfer_to).
         A real call (2026-10-12) offered it three replies in a row."""
@@ -3177,6 +3193,11 @@ class CallSession:
                     say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
                         say = self._speech_fixes(_speak_phone_digits(say))
+                    if say and say.endswith("?") and self._asked_too_often(say):
+                        # A real call (2026-10-12) tacked "మీ పేరు చెప్తారండి?"
+                        # onto four answers in a row.
+                        log.info("dropped a question already asked twice: %r", say)
+                        continue
                     if say and self._offer_limit_reached() and "కనెక్ట్ చేయమంటార" in say:
                         log.info("dropped a third offer to connect: %r", say)
                         continue
@@ -3222,6 +3243,11 @@ class CallSession:
         self.messages.append({"role": "assistant", "content": full})
         spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
+        bye = (self.client or {}).get("goodbye_phrase")
+        if not end_call and bye and bye in spoken_full and not spoken_full.rstrip().endswith("?"):
+            # The script's goodbye line only ever closes a call: a real call
+            # (2026-10-12) said it, didn't hang up, and said it again.
+            end_call = True
         # The marker, or the script's fixed transfer sentence: in testing the
         # model said "connecting you now" but often left the marker off.
         phrase = (self.client or {}).get("transfer_phrase")
