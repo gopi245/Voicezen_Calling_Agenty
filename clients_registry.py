@@ -36,15 +36,14 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918071580257",
         "prompt_module": "script_voicezen",
-        # Multilingual: business callers ring this line from anywhere, so the
-        # language is detected per utterance and the reply voice follows it.
-        # The accuracy tradeoff that rules auto-detect out for Gundusoodi
-        # doesn't apply -- this script collects a name and a business, not
-        # house numbers and pincodes, so a misheard digit can't corrupt an
-        # order. Languages covered are whatever RAYA_VOICES has a voice for.
-        "stt_language": "unknown",
+        # Telugu only, at the owner's request (2026-10-12): back from
+        # multilingual auto-detect to plain Telugu. Hindi callers have their
+        # own line (+918065353946). Listening in te-IN still understands the
+        # English business words Telugu callers mix in.
+        "stt_language": "te-IN",
         "tts_language": "te",
-        "multilingual": True,
+        "reply_language": "Telugu",
+        "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
     },
