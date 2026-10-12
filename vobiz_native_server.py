@@ -2912,6 +2912,14 @@ class CallSession:
             how = "That is a yes to the welcome question: tell them in one short sentence what VoiceZen does, then ask their name."
         return [{"role": "system", "content": f"The caller's first words were only \"{users[0]['content']}\". {how} Never reply \"How can I help you today?\"."}]
 
+    def _speech_fixes(self, text: str) -> str:
+        """Per-client word swaps before speaking (clients_registry
+        "speech_fixes"), longest first so a phrase wins over its part."""
+        fixes = (self.client or {}).get("speech_fixes") or {}
+        for wrong in sorted(fixes, key=len, reverse=True):
+            text = text.replace(wrong, fixes[wrong])
+        return text
+
     def _repeat_guard_note(self) -> list[dict]:
         """Clients with "repeat_guard" (SR Electrical) -- the questions this
         call has already asked twice, so the model stops asking them. A real
@@ -2930,9 +2938,27 @@ class CallSession:
                 key = re.sub(r"[\s?.!,।]+", " ", q).strip()
                 counts[key] = counts.get(key, 0) + 1
         done = [q + "?" for q, n in counts.items() if n >= 2]
+        notes = []
+        # A question the caller just asked gets answered before anything
+        # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
+        # ask its own next question.
+        last = self._last_caller_words() or ""
+        topics = (self.client or {}).get("transfer_topics")
+        if topics and re.search(topics, last, re.I):
+            # Topics the client's brief has no answer for: the model kept
+            # inventing one ("హాస్టల్ లేదు", "గవర్నమెంట్ అప్రూవ్డ్") in testing.
+            return [{"role": "system", "content": (
+                f"The caller asked: \"{last}\". Your instructions have NO answer for this. Reply with ONLY the "
+                "transfer sentence from your instructions, word for word, and nothing else.")}]
+        if last.rstrip().endswith("?") or re.search(
+                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|నా\?)", last):
+            notes.append({"role": "system", "content": (
+                f"The caller just asked a question: \"{last}\". Answer exactly that question first, in this reply "
+                "(from the facts in your instructions, or with the transfer sentence if they aren't there), and only "
+                "then ask your next question.")})
         if not done:
-            return []
-        return [{"role": "system", "content": (
+            return notes
+        return notes + [{"role": "system", "content": (
             "You have already asked these questions twice in this call. Your reply must NOT contain any of "
             "them, in any wording: " + " | ".join(done) + ". Ask the next step you still need instead; if "
             "nothing is left to ask, offer to connect them to the team.")}]
@@ -3026,7 +3052,7 @@ class CallSession:
                         break
                     say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
-                        say = _speak_phone_digits(say)
+                        say = self._speech_fixes(_speak_phone_digits(say))
                     if say:
                         spoken_any = True
                         said.append(say)
@@ -3041,7 +3067,7 @@ class CallSession:
                     break
             tail = _strip_markers(buffer).strip()
             if tail and not self._legacy_engine:
-                tail = _speak_phone_digits(tail)
+                tail = self._speech_fixes(_speak_phone_digits(tail))
             if tail and not asked:
                 spoken_any = True
                 said.append(tail)

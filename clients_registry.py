@@ -74,6 +74,17 @@ CLIENTS: dict[str, dict] = {
             "ఎలక్ట్రీషియన్, ప్రాక్టికల్స్, సర్టిఫికేట్, ట్రైనింగ్, బ్యాచ్, ఎల్ అండ్ టీ మెట్రో, ఫార్మా"
         ),
         # Live transfer target when the agent says [[TRANSFER]].
+        # Spoken-text fixes: the model keeps writing ITI as "ఇటీవలి" (recent).
+        "speech_fixes": {"ఇటీవలి ITI": "ఐటీఐ", "ఇటీవలి ఐటీఐ": "ఐటీఐ", "ITI": "ఐటీఐ", "ఇటీఐ": "ఐటీఐ",
+                         "ఇంటర్నేషనల్ టెక్నికల్ ఇన్స్టిట్యూట్": "ఐటీఐ"},
+        # Questions the client's brief has no answer for -> always the
+        # transfer sentence (the model invented answers in testing).
+        "transfer_topics": (
+            r"హాస్టల్|hostel|రూమ్|ఫుడ్|భోజనం|ఈఎంఐ|EMI|ఇన్‌స్టాల్‌మెంట్|ఇన్స్టాల్మెంట్|డిస్కౌంట్|discount|తగ్గిస్తారా|"
+            r"అడ్రస్|address|ఎక్కడ ఉంది|లొకేషన్|location|టైమింగ్|timing|ఎన్ని గంటలకు|బ్యాచ్|batch|"
+            r"ఆన్‌లైన్|ఆన్లైన్|online|గవర్నమెంట్|government|అప్రూవ్|approved|గుర్తింపు|డాక్యుమెంట్|document|"
+            r"లోన్|loan|ఏజ్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
+        ),
         # Tell the model which questions it has already asked twice.
         "repeat_guard": True,
         "transfer_to": "+919154681593",
