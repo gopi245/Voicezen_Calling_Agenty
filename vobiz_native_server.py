@@ -2928,6 +2928,26 @@ class CallSession:
             text = re.sub(r"ం అండి", "మండి", text)
         return text
 
+    def _question_after_offer(self) -> bool:
+        """We offered to connect them and they answered with a question (an
+        answerable one, not a transfer topic) instead of yes/no. A test of a
+        real call (2026-10-12) took "ఆ, ముందు ఫీజ్ ఎంత చెప్పండి?" as a yes
+        and transferred mid-question."""
+        client = self.client or {}
+        if not client.get("transfer_to"):
+            return False
+        prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
+        last = (self._last_caller_words() or "").strip()
+        if "కనెక్ట్ చేయమంటార" not in prev or not last:
+            return False
+        topics = client.get("transfer_topics")
+        if topics and re.search(topics, last, re.I):
+            return False
+        if re.search(r"కనెక్ట్|connect|మాట్లాడ|సార్|మేడం|staff|జాయిన్|join|అడ్మిషన్", last, re.I):
+            return False
+        return bool(last.endswith("?") or re.search(
+            r"ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|ఏమిటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా", last))
+
     def _offer_limit_reached(self) -> bool:
         """The connect offer has been made twice (clients with transfer_to).
         A real call (2026-10-12) offered it three replies in a row."""
@@ -2963,7 +2983,10 @@ class CallSession:
                 # strip Telugu vowel signs and garble the question.
                 key = re.sub(r"[\s?.!,।]+", " ", q).strip()
                 counts[key] = counts.get(key, 0) + 1
-        done = [q + "?" for q, n in counts.items() if n >= 2]
+        # The qualification decides the I.E.M fee -- without it the call can't
+        # go anywhere -- so it may be asked (rephrased) more often. A real call
+        # (2026-10-12) moved on to the name after two unanswered asks.
+        done = [q + "?" for q, n in counts.items() if n >= (4 if "చదివార" in q else 2)]
         notes = []
         # A question the caller just asked gets answered before anything
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
@@ -2973,6 +2996,30 @@ class CallSession:
             return [{"role": "system", "content": (
                 f"The caller just said \"{last}\" -- that is NO to connecting them to the team. Do NOT transfer and "
                 "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
+        quals = (self.client or {}).get("qualification_lines") or []
+        ha_only = (any(m["role"] == "user" and "ఆటోమేషన్" in (m["content"] or "") for m in self.messages)
+                   and not any(m["role"] == "assistant" and "ఐ ఈ ఎం కోర్సు చేయాలండి" in (m["content"] or "")
+                               for m in self.messages)
+                   and not any(m["role"] == "user" and re.search(r"ఐ ?ఈ ?ఎం|ఐఈఎం|\bIEM\b|ఇండస్ట్రియల్",
+                                                                   m["content"] or "", re.I) for m in self.messages))
+        fee_given = any(m["role"] == "assistant" and ("వాళ్ళకి ఫీజు" in (m["content"] or "")
+                                                     or "ప్రాక్టికల్స్ కోర్సు ఫీజు" in (m["content"] or ""))
+                        for m in self.messages)
+        asked_qual = "చదివార" in next((m["content"] for m in reversed(self.messages)
+                                       if m["role"] == "assistant"), "")
+        line = (next((ln for rx, ln in quals if re.search(rx, last, re.I)), None)
+                if not ha_only and (asked_qual or not fee_given) else None)
+        if line:
+            # The fee is picked here from what they studied, never by the
+            # model: a test replay quoted the B.Tech fee to an ITI student.
+            return [{"role": "system", "content": (
+                f"They just told you their qualification. Say this sentence WORD FOR WORD first: \"{line}\" -- "
+                "then ask the next step you still need (their name, or when they can start). Do not change any "
+                "number and do not add any other fee.")}]
+        if self._question_after_offer():
+            notes.append({"role": "system", "content": (
+                "You offered to connect them, and they replied with a question instead of yes/no. That is NOT a "
+                "yes: answer their question, do NOT transfer and do NOT say the transfer sentence.")})
         topics = (self.client or {}).get("transfer_topics")
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         offers = sum(1 for m in self.messages
@@ -2988,6 +3035,17 @@ class CallSession:
             return [{"role": "system", "content": (
                 "They want a job and Home Automation has no placement. Do NOT transfer and do NOT end the call. "
                 "Reply only: \"జాబ్ ప్లేస్‌మెంట్ కావాలంటే ఐ ఈ ఎం కోర్సు చేయాలండి. మీరు ఏం చదివారండి?\"")}]
+        iem_rx = (r"ఐ\.? ?ఈ\.? ?ఎం|ఐఈఎం|ఐఐఎం|ఐజీఎం|ఐపీఎం|ఐయం|ఐ యామ్|\bI\.?E\.?M\b|\bIEM\b|\bIIM\b|\bIGM\b|\bIM\b|"
+                  r"ఇండస్ట్రియల్")
+        iem_chosen = any(m["role"] == "user" and re.search(iem_rx, m["content"] or "", re.I) for m in self.messages)
+        qual_known = iem_quoted or any(m["role"] == "user" and re.search(
+            r"బీటెక్|బి\.?టెక్|b\.?tech|డిప్లొమా|డిప్లమా|diploma|ఐటీఐ|ITI|ఇంటర్|బీఎస్సీ|బి\.?కాం|డిగ్రీ|degree|పదో|టెన్త్|10th",
+            m["content"] or "", re.I) for m in self.messages)
+        if iem_chosen and not qual_known and not said_no_placement:
+            notes.append({"role": "system", "content": (
+                "They want I.E.M but you don't know their qualification yet. Answer any question they just asked, "
+                "then end this reply by asking it -- \"మీరు బీటెక్, డిప్లొమా, ఐటీఐ లేదా వేరే ఏం చదివారండి?\" -- "
+                "NOT their name or start date.")})
         if offers >= 2:
             # A real call (2026-10-12) offered the transfer three replies in a
             # row while the caller kept asking questions.
@@ -3122,6 +3180,9 @@ class CallSession:
                     if say and self._offer_limit_reached() and "కనెక్ట్ చేయమంటార" in say:
                         log.info("dropped a third offer to connect: %r", say)
                         continue
+                    if say and "కనెక్ట్ చేస్తున్నాను" in say and self._question_after_offer():
+                        log.info("dropped a transfer sentence: they asked a question, not yes: %r", say)
+                        continue
                     if say:
                         spoken_any = True
                         said.append(say)
@@ -3167,6 +3228,9 @@ class CallSession:
         transfer = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
                     and (TRANSFER_MARKER in full or bool(phrase and phrase in spoken_full))
                     and not spoken_full.rstrip().endswith("?"))
+        if transfer and self._question_after_offer():
+            log.warning("transfer skipped: the caller asked a question, not yes (%r)", self._last_caller_words())
+            transfer = False
         if transfer and self._declined_transfer():
             log.warning("transfer skipped: the caller said no (%r)", self._last_caller_words())
             transfer = False
