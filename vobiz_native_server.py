@@ -2928,6 +2928,14 @@ class CallSession:
             text = re.sub(r"ం అండి", "మండి", text)
         return text
 
+    def _offer_limit_reached(self) -> bool:
+        """The connect offer has been made twice (clients with transfer_to).
+        A real call (2026-10-12) offered it three replies in a row."""
+        if not (self.client or {}).get("transfer_to"):
+            return False
+        return sum(1 for m in self.messages if m["role"] == "assistant"
+                   and "కనెక్ట్ చేయమంటార" in (m["content"] or "")) >= 2
+
     def _declined_transfer(self) -> bool:
         """The caller just said no ("వద్దండి") to our offer to connect them.
         A real call (2026-10-12) transferred anyway."""
@@ -2967,7 +2975,27 @@ class CallSession:
                 "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
         topics = (self.client or {}).get("transfer_topics")
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
-        if ("ఎప్పటి నుంచి స్టార్ట్" in prev and not (topics and re.search(topics, last, re.I))
+        offers = sum(1 for m in self.messages
+                     if m["role"] == "assistant" and "కనెక్ట్ చేయమంటార" in (m["content"] or ""))
+        said_no_placement = any(m["role"] == "assistant" and "హోమ్ ఆటోమేషన్" in (m["content"] or "")
+                                and "ప్లేస్‌మెంట్ లేద" in (m["content"] or "") for m in self.messages)
+        iem_quoted = any(m["role"] == "assistant" and ("వంద శాతం" in (m["content"] or "")
+                                                       or "ప్రాక్టికల్స్" in (m["content"] or "")) for m in self.messages)
+        if said_no_placement and not iem_quoted and re.search(r"జాబ్|ఉద్యోగం|job|ప్లేస్‌మెంట్", last, re.I):
+            # A real call (2026-10-12): a Home Automation caller kept asking
+            # for a job and was transferred / sent off instead of being told
+            # which course has placement.
+            return [{"role": "system", "content": (
+                "They want a job and Home Automation has no placement. Do NOT transfer and do NOT end the call. "
+                "Reply only: \"జాబ్ ప్లేస్‌మెంట్ కావాలంటే ఐ ఈ ఎం కోర్సు చేయాలండి. మీరు ఏం చదివారండి?\"")}]
+        if offers >= 2:
+            # A real call (2026-10-12) offered the transfer three replies in a
+            # row while the caller kept asking questions.
+            notes.append({"role": "system", "content": (
+                "You have already offered to connect them to the team twice. Do NOT offer again (no "
+                "\"కనెక్ట్ చేయమంటారండి?\") -- just answer them. Transfer only if they themselves ask for the team, a "
+                "person, or to join.")})
+        if offers < 2 and ("ఎప్పటి నుంచి స్టార్ట్" in prev and not (topics and re.search(topics, last, re.I))
                 and not last.rstrip().endswith("?")):
             # They just said when they can start: offer the team -- never
             # transfer without asking (seen in testing).
@@ -2992,7 +3020,8 @@ class CallSession:
         return notes + [{"role": "system", "content": (
             "You have already asked these questions twice in this call. Your reply must NOT contain any of "
             "them, in any wording: " + " | ".join(done) + ". Ask the next step you still need instead; if "
-            "nothing is left to ask, offer to connect them to the team.")}]
+            "nothing is left to ask, " + ("thank them and say they can call this number any time."
+                                          if offers >= 2 else "offer to connect them to the team."))}]
 
     def _messages_for_llm(self) -> list[dict]:
         """The history sent to the model. For VoiceZen (the non-legacy
@@ -3090,6 +3119,9 @@ class CallSession:
                     say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
                         say = self._speech_fixes(_speak_phone_digits(say))
+                    if say and self._offer_limit_reached() and "కనెక్ట్ చేయమంటార" in say:
+                        log.info("dropped a third offer to connect: %r", say)
+                        continue
                     if say:
                         spoken_any = True
                         said.append(say)
