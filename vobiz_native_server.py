@@ -121,6 +121,8 @@ VOICEZEN_LLM = os.getenv("VOICEZEN_LLM", "").strip()
 REANSWER_AFTER_S = float(os.getenv("REANSWER_AFTER_S", "2.5"))
 # VOICEZEN TEST -- see CallSession._silence_check.
 SILENCE_PROMPT_S = float(os.getenv("SILENCE_PROMPT_S", "6"))
+# VOICEZEN TEST -- longest the welcome waits for the dashboard agent-config.
+AGENT_CONFIG_WAIT_VOICEZEN_S = float(os.getenv("AGENT_CONFIG_WAIT_VOICEZEN_S", "1.0"))
 SILENCE_LINES = {  # (can you hear me?, closing)
     "hi": ("जी, क्या आप मुझे सुन पा रहे हैं?",
            "माफ़ कीजिए जी, आपकी आवाज़ नहीं आ रही है। कृपया थोड़ी देर बाद दोबारा कॉल करें, धन्यवाद।"),
@@ -2375,7 +2377,19 @@ class CallSession:
             return
 
         if config_task is not None:
-            config = await config_task
+            if self._legacy_engine:
+                config = await config_task
+            else:
+                # VOICEZEN TEST -- the caller is waiting in silence for the
+                # welcome: a real call (2026-10-12) heard nothing for 3.7s
+                # while a cold dashboard request timed out. VoiceZen's line runs
+                # on its code script anyway, so after 1s just start with it.
+                try:
+                    config = await asyncio.wait_for(config_task, AGENT_CONFIG_WAIT_VOICEZEN_S)
+                except asyncio.TimeoutError:
+                    log.warning("agent-config slower than %.1fs -- starting with the script file",
+                                AGENT_CONFIG_WAIT_VOICEZEN_S)
+                    config = {"script": None, "ai": None}
             if config["script"]:
                 greeting, instructions, label = config["script"]
                 log.info("script for client '%s': %s", self.client["client_id"], label)
@@ -3114,6 +3128,10 @@ class CallSession:
             pass
 
     async def close(self):
+        # The caller is gone: nothing scheduled earlier (the silence check)
+        # may speak to the closed line. A real call (2026-10-12) asked "can you
+        # hear me?" five seconds after the caller hung up.
+        self._done.set()
         if getattr(self, "_barge_timer", None) is not None and not self._barge_timer.done():
             self._barge_timer.cancel()
         if self._speak_task:
