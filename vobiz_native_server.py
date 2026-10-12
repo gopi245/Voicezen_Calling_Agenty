@@ -2912,6 +2912,31 @@ class CallSession:
             how = "That is a yes to the welcome question: tell them in one short sentence what VoiceZen does, then ask their name."
         return [{"role": "system", "content": f"The caller's first words were only \"{users[0]['content']}\". {how} Never reply \"How can I help you today?\"."}]
 
+    def _repeat_guard_note(self) -> list[dict]:
+        """Clients with "repeat_guard" (SR Electrical) -- the questions this
+        call has already asked twice, so the model stops asking them. A real
+        call (2026-10-12) asked "మీ పేరు చెప్తారా?" five times over line noise:
+        the model can't reliably count its own earlier questions."""
+        if not (self.client or {}).get("repeat_guard"):
+            return []
+        counts: dict[str, int] = {}
+        for m in self.messages:
+            if m["role"] != "assistant":
+                continue
+            q = re.split(r"(?<=[.!।])\s+", _strip_markers(m["content"] or "").strip())[-1]
+            if q.endswith("?"):
+                # Only spaces and punctuation are evened out: \W would also
+                # strip Telugu vowel signs and garble the question.
+                key = re.sub(r"[\s?.!,।]+", " ", q).strip()
+                counts[key] = counts.get(key, 0) + 1
+        done = [q + "?" for q, n in counts.items() if n >= 2]
+        if not done:
+            return []
+        return [{"role": "system", "content": (
+            "You have already asked these questions twice in this call. Your reply must NOT contain any of "
+            "them, in any wording: " + " | ".join(done) + ". Ask the next step you still need instead; if "
+            "nothing is left to ask, offer to connect them to the team.")}]
+
     def _messages_for_llm(self) -> list[dict]:
         """The history sent to the model. For VoiceZen (the non-legacy
         engine) a note naming the caller's language is added for this one
@@ -2919,7 +2944,7 @@ class CallSession:
         history unchanged."""
         if self._legacy_engine:
             return self.messages
-        note = self._first_turn_note()
+        note = self._first_turn_note() + self._repeat_guard_note()
         # A number fixed to one language (clients_registry "reply_language")
         # always answers in it, whatever the caller -- or a mishearing -- says.
         fixed = (self.client or {}).get("reply_language")

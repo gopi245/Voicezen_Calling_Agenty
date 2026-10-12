@@ -74,6 +74,8 @@ CLIENTS: dict[str, dict] = {
             "ఎలక్ట్రీషియన్, ప్రాక్టికల్స్, సర్టిఫికేట్, ట్రైనింగ్, బ్యాచ్, ఎల్ అండ్ టీ మెట్రో, ఫార్మా"
         ),
         # Live transfer target when the agent says [[TRANSFER]].
+        # Tell the model which questions it has already asked twice.
+        "repeat_guard": True,
         "transfer_to": "+919154681593",
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
