@@ -43,6 +43,8 @@ from collections import OrderedDict
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from urllib.parse import quote
+
 import aiohttp
 import requests
 from dotenv import load_dotenv
@@ -160,6 +162,12 @@ SELECTABLE_LLM_MODELS = {
 # Public wss:// URL for this service (sslip.io -- no DNS setup, Caddy issues
 # a real cert for it automatically). Set once the Caddy route is live.
 PUBLIC_WSS_URL = os.getenv("PUBLIC_WSS_URL", "wss://vobiz-native.185-199-52-73.sslip.io/media")
+# This server's https address, for the live-transfer XML Vobiz fetches.
+PUBLIC_HTTP_BASE = re.sub(r"/media/?$", "", PUBLIC_WSS_URL.replace("wss://", "https://", 1))
+# Played (Vobiz's own voice has no Telugu) when the team doesn't pick up.
+TRANSFER_FAILED_TEXT = ("క్షమించండి అండి, మా అడ్మిషన్ టీమ్ ఇప్పుడు అందుబాటులో లేరు. "
+                        "మీ నంబర్ నోట్ చేసుకున్నాం, త్వరలోనే మీకు కాల్ చేస్తారు. థ్యాంక్యూ అండి.")
+TRANSFER_RING_SECONDS = int(os.getenv("TRANSFER_RING_SECONDS", "25"))
 
 VOBIZ_AUTH_ID = os.environ["VOBIZ_AUTH_ID"]
 VOBIZ_AUTH_TOKEN = os.environ["VOBIZ_AUTH_TOKEN"]
@@ -348,6 +356,13 @@ STT_PROMPT_VOICEZEN = (
 # The system prompt has no notion of ending a call (that was a LiveKit
 # function_tool before). Ask the model to mark it in-band instead.
 END_MARKER = "[[END_CALL]]"
+# Live transfer to the client's team (clients_registry "transfer_to"); only
+# a client's own script asks for it.
+TRANSFER_MARKER = "[[TRANSFER]]"
+
+
+def _strip_markers(text: str) -> str:
+    return text.replace(END_MARKER, "").replace(TRANSFER_MARKER, "")
 
 
 def _instructions_no_livekit(base_instructions: str) -> str:
@@ -541,12 +556,12 @@ def _reply_wants_end_call(marked: bool, spoken: str, legacy: bool, last_caller: 
 def load_client_script(dialed_number: str | None):
     """Resolve which client owns this number and load their prompt module.
 
-    Falls back to Gundusoodi if the number isn't in the registry (e.g. the
+    Falls back to VoiceZen's Telugu line if the number isn't in the registry (e.g. the
     "start" event's callId lookup missed, or a number was dialed that was
     never registered) -- answering with the wrong-but-known script is safer
     than a call with no prompt at all.
     """
-    client = lookup_client(dialed_number) or lookup_client("+918065353946")
+    client = lookup_client(dialed_number) or lookup_client("+918071580257")
     module = importlib.import_module(client["prompt_module"])
     return client, module.GREETING, module.INSTRUCTIONS
 
@@ -698,7 +713,7 @@ async def answer(request: Request):
         # dashboard's test list still gets the test script.
         if direction == "inbound" and not entry.get("campaign"):
             client = lookup_client(_to_e164(form.get("To")))
-            if client and client.get("client_id") == "voicezen":
+            if client and (client.get("client_id") == "voicezen" or client.get("engine") == "new"):
                 entry["prefetch"] = asyncio.create_task(
                     _prefetch_call_setup(client.get("customer_id"), _to_e164(form.get("From"))))
 
@@ -886,6 +901,76 @@ async def dial(request: Request):
             if 200 <= r.status < 300 and campaign and request_uuid:
                 pending_call_info[request_uuid] = {"campaign": campaign}
             return data
+
+
+_transfer_failed_wav: bytes | None = None
+
+
+async def _transfer_failed_audio() -> bytes:
+    """TRANSFER_FAILED_TEXT as a WAV, made once and kept."""
+    global _transfer_failed_wav
+    if _transfer_failed_wav is None:
+        pcm = bytearray()
+        async with aiohttp.ClientSession() as http:
+            async for chunk in synthesize(http, TRANSFER_FAILED_TEXT, "te", provider="raya"):
+                pcm += chunk
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(TTS_SAMPLE_RATE)
+            w.writeframes(bytes(pcm))
+        _transfer_failed_wav = buf.getvalue()
+    return _transfer_failed_wav
+
+
+@app.api_route("/transfer-xml", methods=["GET", "POST"])
+async def transfer_xml(request: Request):
+    """What Vobiz runs for a live transfer: ring the client's team, with the
+    client's own number as caller ID so the team sees who it is."""
+    to = request.query_params.get("to", "")
+    caller_id = request.query_params.get("from", "")
+    if not re.fullmatch(r"\+\d{10,15}", to) or not any(c.get("transfer_to") == to for c in CLIENTS_REGISTRY.values()):
+        log.error("transfer-xml: refused target %r", to)
+        return PlainTextResponse('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+                                 media_type="application/xml")
+    action = f"{PUBLIC_HTTP_BASE}/transfer-result"
+    xml = (f'<?xml version="1.0" encoding="UTF-8"?><Response>'
+           f'<Dial callerId="{escape(caller_id)}" timeout="{TRANSFER_RING_SECONDS}" '
+           f'action="{escape(action)}" method="POST"><Number>{escape(to)}</Number></Dial>'
+           f'</Response>')
+    return PlainTextResponse(xml, media_type="application/xml")
+
+
+@app.post("/transfer-result")
+async def transfer_result(request: Request):
+    """After the transfer: if the team didn't answer, tell the caller (in
+    Telugu) they'll be called back, and keep a callback request."""
+    form = await request.form()
+    status = form.get("DialStatus")
+    caller = form.get("From") or form.get("CallerName") or ""
+    log.info("transfer-result: status=%s cause=%s call=%s from=%s", status, form.get("DialHangupCause"),
+             form.get("DialALegUUID") or form.get("CallUUID"), caller)
+    if status == "completed":
+        return PlainTextResponse('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+                                 media_type="application/xml")
+    try:
+        with open(_LOG_DIR / "callback_requests.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "caller": caller,
+                                "to": form.get("To"), "status": status,
+                                "call": form.get("DialALegUUID") or form.get("CallUUID")}) + "\n")
+    except Exception:
+        log.exception("could not save the callback request")
+    log.warning("transfer not answered (%s) -- callback request saved for %s", status, caller)
+    xml = (f'<?xml version="1.0" encoding="UTF-8"?><Response>'
+           f'<Play>{escape(PUBLIC_HTTP_BASE)}/transfer-failed.wav</Play><Hangup/></Response>')
+    return PlainTextResponse(xml, media_type="application/xml")
+
+
+@app.get("/transfer-failed.wav")
+async def transfer_failed_wav():
+    from fastapi.responses import Response
+    return Response(await _transfer_failed_audio(), media_type="audio/wav")
 
 
 @app.post("/stream-status")
@@ -2127,6 +2212,7 @@ class CallSession:
         # VOICEZEN TEST -- see _silence_check.
         self._silence_token = 0
         self._silence_prompts = 0
+        self._transfer_requested = False
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
         # when the phone line will have finished playing everything sent to
@@ -2334,7 +2420,8 @@ class CallSession:
         # DB-registry calls have no client_id here and stay on the legacy
         # engine along with everyone but VoiceZen, until this is widened on
         # purpose.
-        self._legacy_engine = not (self.client and self.client.get("client_id") == "voicezen")
+        self._legacy_engine = not (self.client and (self.client.get("client_id") == "voicezen"
+                                                     or self.client.get("engine") == "new"))
         # VOICEZEN TEST -- a dashboard "Demo Call" pitches VoiceZen, so it gets
         # VoiceZen's engine too. On the legacy engine the first demo (2026-10-08)
         # stopped itself 9 times in 27 s: the agent's own "నమస్కారంండి" came back
@@ -2432,7 +2519,7 @@ class CallSession:
                 # unused Sarvam client.
                 self.stt = CartesiaSTT(self._on_transcript, self._on_speech_start,
                                        self._on_detected_language)
-            await self.stt.connect(self._stt_language, STT_PROMPT_VOICEZEN)
+            await self.stt.connect(self._stt_language, (self.client or {}).get("stt_prompt") or STT_PROMPT_VOICEZEN)
 
     async def on_media(self, pcm16_b64: str):
         raw = base64.b64decode(pcm16_b64)
@@ -2798,7 +2885,7 @@ class CallSession:
             log.exception("llm failed")
             return
         self.messages.append({"role": "assistant", "content": reply})
-        spoken = reply.replace(END_MARKER, "").strip()
+        spoken = _strip_markers(reply).strip()
         end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine, self._last_caller_words())
         log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
         self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call, turn=turn))
@@ -2813,6 +2900,8 @@ class CallSession:
         """VOICEZEN TEST -- the caller's very first words are only "hello"/"ok":
         the model kept answering "How can I help you today?" (call 2764),
         dropping the pitch. Say what to do for that one reply."""
+        if (self.client or {}).get("client_id") != "voicezen":
+            return []
         users = [m for m in self.messages if m["role"] == "user"]
         if len(users) != 1 or not _FILLER.match(users[0]["content"] or ""):
             return []
@@ -2910,7 +2999,7 @@ class CallSession:
                     sentence, buffer = _next_sentence(buffer)
                     if not sentence:
                         break
-                    say = sentence.replace(END_MARKER, "").strip()
+                    say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
                         say = _speak_phone_digits(say)
                     if say:
@@ -2925,7 +3014,7 @@ class CallSession:
                     # streaming, unread, until it finishes on its own.
                     await gen.aclose()
                     break
-            tail = buffer.replace(END_MARKER, "").strip()
+            tail = _strip_markers(buffer).strip()
             if tail and not self._legacy_engine:
                 tail = _speak_phone_digits(tail)
             if tail and not asked:
@@ -2933,7 +3022,8 @@ class CallSession:
                 said.append(tail)
                 await queue.put(tail)
             if asked:
-                rest = (full[len(" ".join(said)):] if full.startswith(" ".join(said)) else buffer).replace(END_MARKER, "").strip()
+                rest = (full[len(" ".join(said)):] if full.startswith(" ".join(said)) else buffer)
+                rest = _strip_markers(rest).strip()
                 if rest:
                     log.info("dropped the rest of the reply after its question: %r", rest[:200])
                 full = " ".join(said)
@@ -2949,12 +3039,18 @@ class CallSession:
             raise RuntimeError("stream produced no text")
 
         self.messages.append({"role": "assistant", "content": full})
-        spoken_full = full.replace(END_MARKER, "").strip()
+        spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
-        log.info("bot: %s%s", spoken_full, "  [END_CALL]" if end_call else "")
-        # None means "no more sentences"; the speaker hangs up after it if
-        # the reply asked for the call to end.
-        await queue.put(("END_CALL",) if end_call else None)
+        # The marker, or the script's fixed transfer sentence: in testing the
+        # model said "connecting you now" but often left the marker off.
+        phrase = (self.client or {}).get("transfer_phrase")
+        transfer = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
+                    and (TRANSFER_MARKER in full or bool(phrase and phrase in spoken_full))
+                    and not spoken_full.rstrip().endswith("?"))
+        log.info("bot: %s%s", spoken_full, "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
+        # None means "no more sentences"; the speaker hangs up (or transfers)
+        # after it if the reply asked for that.
+        await queue.put(("TRANSFER",) if transfer else ("END_CALL",) if end_call else None)
 
     async def _speak_queue(self, queue: "asyncio.Queue", transcript_at: float,
                             speech_seen_at: float | None, turn: dict | None = None):
@@ -2964,6 +3060,7 @@ class CallSession:
         stops the entire reply -- not just the sentence being spoken.
         """
         end_call = False
+        transfer = False
         me = asyncio.current_task()
         self._live_speak.add(me)
         me.add_done_callback(self._live_speak.discard)
@@ -2982,6 +3079,7 @@ class CallSession:
                     break
                 if isinstance(item, tuple):
                     end_call = True
+                    transfer = item[0] == "TRANSFER"
                     break
                 async for chunk in synthesize(self.http, item, self._tts_language,
                                               self._voice_overrides, self._tts_speed,
@@ -3025,8 +3123,41 @@ class CallSession:
                 if not self.playing:
                     break
                 await asyncio.sleep(0.1)
+            if transfer and await self._transfer_call():
+                # Vobiz now runs the transfer; the stream closes on its own.
+                self._done.set()
+                return
             await self._send({"event": "stop", "streamId": self.stream_id})
             self._done.set()
+
+    async def _transfer_call(self) -> bool:
+        """Hand the caller to the client's team (clients_registry
+        "transfer_to") by redirecting the live call to a <Dial>. False if
+        Vobiz refused, so the caller still gets a proper ending."""
+        to = (self.client or {}).get("transfer_to")
+        if not to or not self._call_uuid or not PUBLIC_HTTP_BASE:
+            log.error("transfer requested but not possible (to=%s call=%s)", to, self._call_uuid)
+            return False
+        self._transfer_requested = True
+        auth_id, auth_token = self._vobiz_auth
+        url = (f"{PUBLIC_HTTP_BASE}/transfer-xml?to={quote(to)}"
+               f"&from={quote(self._client_number or '')}")
+        try:
+            async with self.http.post(
+                f"{VOBIZ_API}/Account/{auth_id}/Call/{self._call_uuid}/",
+                headers={"X-Auth-ID": auth_id, "X-Auth-Token": auth_token,
+                         "Content-Type": "application/json"},
+                json={"legs": "aleg", "aleg_url": url, "aleg_method": "POST"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                body = await r.text()
+                if r.status in (200, 201, 202):
+                    log.info("transfer: call %s handed to %s", self._call_uuid, to)
+                    return True
+                log.error("transfer failed: HTTP %s %s", r.status, body[:300])
+        except Exception:
+            log.exception("transfer request failed")
+        return False
 
     def _begin_bot_audio(self) -> None:
         """Marks where in the caller timeline this turn starts speaking."""
@@ -3327,7 +3458,46 @@ class CallSession:
         summary = None
         caller_name = None
         captured_data = None
-        if transcript.strip():
+        if transcript.strip() and (self.client or {}).get("client_id") == "sr_electrical":
+            # SR Electrical: the student's details for the admission team.
+            try:
+                raw = await asyncio.to_thread(
+                    llm_reply,
+                    [
+                        {"role": "system", "content": (
+                            "Read this phone call transcript of a student enquiring at an electrical "
+                            "training institute. Reply with ONLY a single JSON object, no markdown, with "
+                            "exactly these keys:\n"
+                            '  "student_name": the caller\'s name if stated, else null\n'
+                            '  "qualification": one of "B.Tech EEE", "Diploma EEE", "ITI Electrician", '
+                            '"Other", or null if not said\n'
+                            '  "course": "I.E.M", "Home Automation", "Both", or null\n'
+                            '  "start_when": when they said they can start the training, in English, else null\n'
+                            '  "call_result": one short English sentence on how the call ended\n'
+                            '  "lead_status": one of "Interested", "Follow-up", "Not interested"\n'
+                            '  "summary": a summary for the admission team, in English, at most four '
+                            "sentences -- what the student asked, their details, and the outcome."
+                        )},
+                        {"role": "user", "content": transcript[:12000]},
+                    ],
+                )
+                parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
+                caller_name = parsed.get("student_name") or None
+                summary = parsed.get("summary") or None
+                captured_data = {
+                    "extracted_variables": {
+                        "student_name": caller_name,
+                        "qualification": parsed.get("qualification"),
+                        "course": parsed.get("course"),
+                        "start_when": parsed.get("start_when"),
+                    },
+                    "call_result": parsed.get("call_result"),
+                    "lead_status": parsed.get("lead_status"),
+                    "transferred_to_team": self._transfer_requested,
+                }
+            except Exception:
+                log.exception("call summary/extraction failed -- reporting without one")
+        elif transcript.strip():
             try:
                 raw = await asyncio.to_thread(
                     llm_reply,

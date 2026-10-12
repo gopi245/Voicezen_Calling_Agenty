@@ -47,30 +47,37 @@ CLIENTS: dict[str, dict] = {
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
     },
-    # Gundusoodi's former voice number, moved to VoiceZen on 2026-10-08 at the
-    # owner's request (Gundusoodi keeps its WhatsApp number and history). Listed
-    # AFTER VoiceZen's main line on purpose: dial_from_for_customer returns the
-    # first match, so VoiceZen's outbound and demo calls keep going out as
-    # +918071580257.
+    # SR Electrical Training Center, set up on 2026-10-12 at the owner's
+    # request on the number that was VoiceZen's Hindi line (before that,
+    # Gundusoodi's voice number). Telugu only. Runs on the newer call engine
+    # (silence check, barge-in handling) like VoiceZen -- "engine": "new" --
+    # and hands interested students to the admission team by live transfer.
     "+918065353946": {
-        "client_id": "voicezen",
+        "client_id": "sr_electrical",
         "customer_id": (
-            int(os.environ["VOICEZEN_CUSTOMER_ID"])
-            if os.getenv("VOICEZEN_CUSTOMER_ID", "").strip().isdigit()
+            int(os.environ["SR_ELECTRICAL_CUSTOMER_ID"])
+            if os.getenv("SR_ELECTRICAL_CUSTOMER_ID", "").strip().isdigit()
             else None
         ),
         "dial_from": "+918065353946",
-        "prompt_module": "script_voicezen_hi",
-        # Hindi only, at the owner's request (2026-10-10): auto-detect turned a
-        # Hindi caller into Punjabi on a real call and the agent answered in
-        # Punjabi. Listening in hi-IN still understands English words.
-        "stt_language": "hi-IN",
-        "tts_language": "hi",
-        "reply_language": "Hindi",
-        # Kept on Raya at the owner's request (2026-10-09) while Google voices
-        # are tried on the Telugu line.
+        "prompt_module": "script_sr_electrical",
+        "engine": "new",
+        "stt_language": "te-IN",
+        "tts_language": "te",
+        "reply_language": "Telugu",
         "tts_provider": "raya",
         "multilingual": False,
+        # Speech-recognition hints: the words students actually say here.
+        "stt_prompt": (
+            "SR ఎలక్ట్రికల్, ఐ.ఈ.ఎం, IEM, ఇండస్ట్రియల్ ఎలక్ట్రికల్ మెయింటెనెన్స్, హోమ్ ఆటోమేషన్, "
+            "కోర్సు, ఫీజు, ప్లేస్‌మెంట్, జాబ్, సాలరీ, అడ్మిషన్, బీటెక్, ఈఈఈ, డిప్లొమా, ఐటీఐ, "
+            "ఎలక్ట్రీషియన్, ప్రాక్టికల్స్, సర్టిఫికేట్, ట్రైనింగ్, బ్యాచ్, ఎల్ అండ్ టీ మెట్రో, ఫార్మా"
+        ),
+        # Live transfer target when the agent says [[TRANSFER]].
+        "transfer_to": "+919154681593",
+        # The script's fixed transfer sentence -- also triggers the transfer
+        # when the model leaves the marker off.
+        "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
     },
