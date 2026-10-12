@@ -75,7 +75,8 @@ CLIENTS: dict[str, dict] = {
         ),
         # Live transfer target when the agent says [[TRANSFER]].
         # Spoken-text fixes: the model keeps writing ITI as "ఇటీవలి" (recent).
-        "speech_fixes": {"ఇటీవలి ITI": "ఐటీఐ", "ఇటీవలి ఐటీఐ": "ఐటీఐ", "ITI": "ఐటీఐ", "ఇటీఐ": "ఐటీఐ",
+        "speech_fixes": {"ఐ.ఈ.ఎం": "ఐ ఈ ఎం", "ఐ. ఈ. ఎం": "ఐ ఈ ఎం", "I.E.M": "ఐ ఈ ఎం", "I. E. M": "ఐ ఈ ఎం",
+                         "IEM": "ఐ ఈ ఎం", "ఇటీవలి ITI": "ఐటీఐ", "ఇటీవలి ఐటీఐ": "ఐటీఐ", "ITI": "ఐటీఐ", "ఇటీఐ": "ఐటీఐ",
                          "ఇంటర్నేషనల్ టెక్నికల్ ఇన్స్టిట్యూట్": "ఐటీఐ"},
         # Questions the client's brief has no answer for -> always the
         # transfer sentence (the model invented answers in testing).

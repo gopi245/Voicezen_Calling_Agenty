@@ -3069,6 +3069,12 @@ class CallSession:
                     log.info("TIMING turn llm_first_token=%.2fs after transcript",
                              time.time() - transcript_at)
                 buffer += piece
+                if not self._legacy_engine and (self.client or {}).get("speech_fixes"):
+                    # Before splitting: "ఐ.ఈ.ఎం" would otherwise be cut at
+                    # every dot and spoken one letter at a time.
+                    buffer = self._speech_fixes(buffer)
+                    if re.search(r"(^|\s)(ఐ|I)\.[\sఈఎంEM.]{0,8}$", buffer):
+                        continue  # wait for the rest of a dotted short form
                 while True:
                     sentence, buffer = _next_sentence(buffer)
                     if not sentence:
