@@ -2920,6 +2920,16 @@ class CallSession:
             text = text.replace(wrong, fixes[wrong])
         return text
 
+    def _declined_transfer(self) -> bool:
+        """The caller just said no ("వద్దండి") to our offer to connect them.
+        A real call (2026-10-12) transferred anyway."""
+        if not (self.client or {}).get("transfer_to"):
+            return False
+        last = (self._last_caller_words() or "").strip()
+        prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
+        return bool("కనెక్ట్ చేయమంటారా" in prev and re.match(
+            r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|no|nope|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత)", last, re.I))
+
     def _repeat_guard_note(self) -> list[dict]:
         """Clients with "repeat_guard" (SR Electrical) -- the questions this
         call has already asked twice, so the model stops asking them. A real
@@ -2943,7 +2953,19 @@ class CallSession:
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
         # ask its own next question.
         last = self._last_caller_words() or ""
+        if self._declined_transfer():
+            return [{"role": "system", "content": (
+                f"The caller just said \"{last}\" -- that is NO to connecting them to the team. Do NOT transfer and "
+                "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
         topics = (self.client or {}).get("transfer_topics")
+        prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
+        if ("ఎప్పటి నుంచి స్టార్ట్" in prev and not (topics and re.search(topics, last, re.I))
+                and not last.rstrip().endswith("?")):
+            # They just said when they can start: offer the team -- never
+            # transfer without asking (seen in testing).
+            return [{"role": "system", "content": (
+                "They just told you when they can start. Do NOT transfer yet and do NOT say the transfer sentence. "
+                "Reply only: \"మా అడ్మిషన్ టీమ్‌కి కనెక్ట్ చేయమంటారా అండి?\"")}]
         if topics and re.search(topics, last, re.I):
             # Topics the client's brief has no answer for: the model kept
             # inventing one ("హాస్టల్ లేదు", "గవర్నమెంట్ అప్రూవ్డ్") in testing.
@@ -2953,7 +2975,8 @@ class CallSession:
         if last.rstrip().endswith("?") or re.search(
                 r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|నా\?)", last):
             notes.append({"role": "system", "content": (
-                f"The caller just asked a question: \"{last}\". Answer exactly that question first, in this reply "
+                "The caller's last message is a question. Answer that question first, in this reply, in your own "
+                "words without repeating their question back "
                 "(from the facts in your instructions, or with the transfer sentence if they aren't there), and only "
                 "then ask your next question.")})
         if not done:
@@ -3098,6 +3121,9 @@ class CallSession:
         transfer = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
                     and (TRANSFER_MARKER in full or bool(phrase and phrase in spoken_full))
                     and not spoken_full.rstrip().endswith("?"))
+        if transfer and self._declined_transfer():
+            log.warning("transfer skipped: the caller said no (%r)", self._last_caller_words())
+            transfer = False
         log.info("bot: %s%s", spoken_full, "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up (or transfers)
         # after it if the reply asked for that.
