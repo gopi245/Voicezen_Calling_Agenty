@@ -2918,6 +2918,14 @@ class CallSession:
         fixes = (self.client or {}).get("speech_fixes") or {}
         for wrong in sorted(fixes, key=len, reverse=True):
             text = text.replace(wrong, fixes[wrong])
+        if (self.client or {}).get("join_andi"):
+            # Spoken Telugu runs అండి into the word before it: "చదివారు అండి"
+            # is said "చదివారండి", "ఇస్తాం అండి" "ఇస్తామండి", "చెప్తారా
+            # అండి?" "చెప్తారండి?". The client asked for this (2026-10-12).
+            text = text.replace("సరే అండి", "సరేనండి")
+            text = re.sub(r"ే అండి", "ేనండి", text)      # మాత్రమేనండి
+            text = re.sub(r"[ుిా్] అండి", "ండి", text)    # అసిస్టెంటండి
+            text = re.sub(r"ం అండి", "మండి", text)
         return text
 
     def _declined_transfer(self) -> bool:
@@ -2927,7 +2935,7 @@ class CallSession:
             return False
         last = (self._last_caller_words() or "").strip()
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
-        return bool("కనెక్ట్ చేయమంటారా" in prev and re.match(
+        return bool("కనెక్ట్ చేయమంటార" in prev and re.match(
             r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|no|nope|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత)", last, re.I))
 
     def _repeat_guard_note(self) -> list[dict]:

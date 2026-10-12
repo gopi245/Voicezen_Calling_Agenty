@@ -75,7 +75,10 @@ CLIENTS: dict[str, dict] = {
         ),
         # Live transfer target when the agent says [[TRANSFER]].
         # Spoken-text fixes: the model keeps writing ITI as "ఇటీవలి" (recent).
-        "speech_fixes": {"ఐ.ఈ.ఎం": "ఐ ఈ ఎం", "ఐ. ఈ. ఎం": "ఐ ఈ ఎం", "I.E.M": "ఐ ఈ ఎం", "I. E. M": "ఐ ఈ ఎం",
+        # Spoken Telugu joins అండి to the word before it ("చదివారండి").
+        "join_andi": True,
+        "speech_fixes": {"ఫీజు ఇరవై వేల రూపాయలు": "ఫీజు ఇరవై మూడు వేల రూపాయలు",  # no ₹20,000 fee exists
+                         "ఐ.ఈ.ఎం": "ఐ ఈ ఎం", "ఐ. ఈ. ఎం": "ఐ ఈ ఎం", "I.E.M": "ఐ ఈ ఎం", "I. E. M": "ఐ ఈ ఎం",
                          "IEM": "ఐ ఈ ఎం", "ఇటీవలి ITI": "ఐటీఐ", "ఇటీవలి ఐటీఐ": "ఐటీఐ", "ITI": "ఐటీఐ", "ఇటీఐ": "ఐటీఐ",
                          "ఇంటర్నేషనల్ టెక్నికల్ ఇన్స్టిట్యూట్": "ఐటీఐ"},
         # Questions the client's brief has no answer for -> always the
