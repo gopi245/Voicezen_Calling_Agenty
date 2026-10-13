@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(python -c ' *)",
-      "Bash(python agent.py start)"
+      "Bash(python agent.py start)",
+      "WebFetch(domain:livekit.io)",
+      "Bash(cd \"/c/Users/Developer/OneDrive/Downloads/dashboard\" *)",
+      "Read(//c/Users/Developer/OneDrive/Downloads/dashboard/**)",
+      "Bash(scp:*)"
     ]
   }
 }
