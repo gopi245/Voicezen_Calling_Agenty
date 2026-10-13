@@ -200,6 +200,34 @@ DEMO_CALL_NOTE = """
 
 THIS IS AN OUTBOUND DEMO CALL: the person asked VoiceZen for a demo call, and the opening line already introduced you as VoiceZen's AI assistant. Start by telling them in one or two short sentences what VoiceZen does, then follow the normal flow above (their name, business, calls a day, offer the free demo, confirm the callback on this same number once, then thank them and close). Never claim percentages or results you weren't told.
 Asked about plans, packages or prices (speech recognition often writes plans as "ప్లాంట్స్"/"plants" -- never mention plants): give the price line in their language (price depends on how many calls they get; our team calls with the exact price), then continue. Ask their name early, before the callback is confirmed."""
+# VOICEZEN TEST -- a website "call me back" form for VoiceZen itself runs on
+# VoiceZen's tuned Telugu script, not the generic campaign template: real
+# calls on 2026-10-13 introduced themselves in English as "Alex", spoke of the
+# person in the third person, never said who was calling, and ran long.
+INSTANT_LEAD_GREETING = ("నమస్కారం అండి, నేను VoiceZen నుంచి AI అసిస్టెంట్‌ని. "
+                         "మీరు ఇప్పుడే మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదండి. "
+                         "ఇప్పుడు ఒక రెండు నిమిషాలు మాట్లాడొచ్చా?")
+INSTANT_LEAD_NOTE = """
+
+THIS IS AN OUTBOUND CALLBACK: the person you are talking to just gave this number on the VoiceZen website (voicezentech.com) and asked for a call back. The opening line already said who you are and why you called -- never re-introduce yourself, never use any other name, and talk TO them (you, మీరు), never about them by name in the third person.
+If they say yes / okay: tell them in one or two short sentences what VoiceZen does, then the normal flow (their business, calls a day, offer the free demo on this same number, then close).
+If they ask which website or don't remember: "voicezentech.com అండి, అక్కడ మీ నంబర్ ఇచ్చి కాల్ బ్యాక్ అడిగారు." -- once. If they say they never asked or are busy: apologise in one line, say they can call this number any time, and end politely.
+Keep every reply to one or two short sentences."""
+# Phone-side recordings and call screeners, transcribed as if the caller had
+# said them ("this call is no longer being recorded", "if you record your
+# name and reason for calling..."). Real calls (2026-10-13) answered them as
+# speech three times in a row.
+_PHONE_ANNOUNCEMENT = re.compile(
+    r"రికార్డెడ్|బీయింగ్ రికార్డ్|రికార్డ్ యువర్ నేమ్|రీజన్ ఫర్ కాల|ఇఫ్ దిస్ పర్సన్|పర్సన్ ఇస్ అవైలబుల్|"
+    r"being recorded|is recorded|record your name|reason for calling|this person is available|"
+    r"కాల్ రికార్డ్ (అవుతుంది|చేయబడుతుంది|అవుతోంది)", re.I)
+_CALL_SCREENER = re.compile(r"రికార్డ్ యువర్ నేమ్|రీజన్ ఫర్ కాల|record your name|reason for calling", re.I)
+# Numbers VoiceZen's website-callback calls just rang, so a callback from one
+# of them is greeted as such (kept in memory; a restart forgets them).
+_RECENT_LEAD_CALLS: dict[str, float] = {}
+RECENT_LEAD_WINDOW_S = 6 * 3600
+LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
+                          "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
 INSTANT_LEAD_TIME_LIMIT_CLOSING = {
     "te": "మన సమయం అయిపోయింది అండి. మా team మీకు మళ్ళీ callback చేస్తుంది, ధన్యవాదాలు.",
     "hi": "हमारा समय पूरा हो गया है। हमारी टीम आपको दोबारा कॉल करेगी, धन्यवाद।",
@@ -2213,6 +2241,9 @@ class CallSession:
         self._silence_token = 0
         self._silence_prompts = 0
         self._transfer_requested = False
+        self._voicezen_lead_client = None
+        self._ending = False
+        self._screener_answered = False
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
         # when the phone line will have finished playing everything sent to
@@ -2360,6 +2391,18 @@ class CallSession:
                 module = importlib.import_module(
                     "script_voicezen_hi" if (self._campaign.get("language") or "") == "Hindi" else "script_voicezen")
                 instructions = module.INSTRUCTIONS + DEMO_CALL_NOTE
+            vz_lead = None
+            if self._campaign.get("instant_lead") and not self._campaign.get("script_test"):
+                vz_lead = lookup_client(dial_from_for_customer(self._campaign.get("customer_id")) or "")
+                if not (vz_lead and vz_lead.get("client_id") == "voicezen"):
+                    vz_lead = None
+            if vz_lead:
+                instructions = importlib.import_module("script_voicezen").INSTRUCTIONS + INSTANT_LEAD_NOTE
+                greeting = INSTANT_LEAD_GREETING
+                self._voicezen_lead_client = vz_lead
+                lead_no = _to_e164(self._to_number)
+                if lead_no:
+                    _RECENT_LEAD_CALLS[lead_no] = time.time()
             if self._campaign.get("script_test"):
                 instructions = self._campaign.get("script_instructions") or instructions
                 greeting = self._campaign.get("script_greeting") or greeting
@@ -2412,6 +2455,16 @@ class CallSession:
             self._tts_language = self.client.get("tts_language") or self._tts_language
             self._follow_caller_language = bool(self.client.get("multilingual"))
             self._tts_provider = self.client.get("tts_provider")
+            caller_no = _to_e164(self._from_number)
+            if (self.client.get("client_id") == "voicezen" and self._direction != "outbound" and caller_no
+                    and time.time() - _RECENT_LEAD_CALLS.get(caller_no, 0) < RECENT_LEAD_WINDOW_S):
+                # VOICEZEN TEST -- a lead ringing back after our website-callback
+                # call (2026-10-13) got the cold welcome, as if we'd never called.
+                greeting = LEAD_CALLBACK_GREETING
+                instructions = (instructions or "") + INSTANT_LEAD_NOTE.replace(
+                    "The opening line already said who you are and why you called",
+                    "We called them a little earlier and they are calling back; the opening line already said so")
+                log.info("caller %s is a website lead we called earlier -- callback greeting", caller_no)
             log.info("serving client '%s' (%s call, identified by %s, stt=%s multilingual=%s)",
                       self.client["client_id"], self._direction, self._client_number,
                       self._stt_language, self._follow_caller_language)
@@ -2429,6 +2482,13 @@ class CallSession:
         # VoiceZen engine confirms speech before stopping and ignores fillers.
         if self._campaign and self._campaign.get("demo_call"):
             self._legacy_engine = False
+        if self._voicezen_lead_client:
+            # Telugu-only VoiceZen line settings (reply language, voice).
+            self._legacy_engine = False
+            self.client = self._voicezen_lead_client
+            self._stt_language = self.client.get("stt_language") or "te-IN"
+            self._tts_language = self.client.get("tts_language") or "te"
+            self._tts_provider = self.client.get("tts_provider")
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         # VOICEZEN TEST -- answer() already started these (see there).
         prefetched = None
@@ -2582,6 +2642,9 @@ class CallSession:
             await self._barge_in()
 
     async def _barge_in(self):
+        if not self._legacy_engine and self._ending:
+            log.info("barge-in ignored: the goodbye is playing")
+            return
         log.info("barge-in: clearing playback")
         if not self._legacy_engine:
             ot = self._open_turn
@@ -2647,6 +2710,20 @@ class CallSession:
         """Buffer the transcript and (re)start the debounce timer. Sarvam
         splits one spoken sentence into several finals, so answering each one
         immediately makes the bot reply to fragments and talk over itself."""
+        if not self._legacy_engine and self._ending:
+            log.info("ignored %r: the goodbye is playing and the call is ending", text)
+            return
+        if not self._legacy_engine and _PHONE_ANNOUNCEMENT.search(text or ""):
+            # VOICEZEN TEST -- the caller's phone talking, not the caller.
+            if _CALL_SCREENER.search(text) and not self._screener_answered:
+                self._screener_answered = True
+                line = "నేను VoiceZen నుంచి, వెబ్‌సైట్‌లో అడిగిన కాల్ బ్యాక్ కోసం కాల్ చేస్తున్నాను."
+                log.info("call screener heard (%r) -- saying who is calling", text)
+                self.messages.append({"role": "assistant", "content": line})
+                self._speak_task = asyncio.create_task(self._speak(line))
+            else:
+                log.info("ignored %r: a phone recording / screener announcement", text)
+            return
         # VOICEZEN TEST -- only checked at the start of a new turn: a real
         # call showed the exact noise burst that a too-early barge-in
         # ignored getting transcribed as text ("Booth.com") a moment later
@@ -2900,7 +2977,7 @@ class CallSession:
         """VOICEZEN TEST -- the caller's very first words are only "hello"/"ok":
         the model kept answering "How can I help you today?" (call 2764),
         dropping the pitch. Say what to do for that one reply."""
-        if (self.client or {}).get("client_id") != "voicezen":
+        if (self.client or {}).get("client_id") != "voicezen" or self._campaign:
             return []
         users = [m for m in self.messages if m["role"] == "user"]
         if len(users) != 1 or not _FILLER.match(users[0]["content"] or ""):
@@ -2918,6 +2995,12 @@ class CallSession:
         fixes = (self.client or {}).get("speech_fixes") or {}
         for wrong in sorted(fixes, key=len, reverse=True):
             text = text.replace(wrong, fixes[wrong])
+        if (self.client or {}).get("reply_language") == "Telugu":
+            # VOICEZEN TEST -- a Telugu reply carried a Tamil word
+            # ("பரவாயில்லை అండి") on a real call (2026-10-13). A bare "అండి."
+            # left at the start by the removal is dropped too.
+            text = re.sub(r"\S*[஀-௿ಀ-೿ഀ-ൿऀ-ॿ]\S*\s?", "", text)
+            text = re.sub(r"^\s*అండి[.,!]?\s*", "", text)
         if (self.client or {}).get("join_andi"):
             # Spoken Telugu runs అండి into the word before it: "చదివారు అండి"
             # is said "చదివారండి", "ఇస్తాం అండి" "ఇస్తామండి", "చెప్తారా
@@ -3263,6 +3346,10 @@ class CallSession:
         log.info("bot: %s%s", spoken_full, "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up (or transfers)
         # after it if the reply asked for that.
+        if end_call and not transfer and not self._legacy_engine:
+            # VOICEZEN TEST -- a real call (2026-10-13) talked over the goodbye
+            # twice, so the call never hung up and ran on confused.
+            self._ending = True
         await queue.put(("TRANSFER",) if transfer else ("END_CALL",) if end_call else None)
 
     async def _speak_queue(self, queue: "asyncio.Queue", transcript_at: float,
@@ -3408,6 +3495,8 @@ class CallSession:
             self._bot_audio_segment += chunk
 
     async def _speak(self, text: str, end_call: bool = False, turn: dict | None = None):
+        if end_call and not self._legacy_engine:
+            self._ending = True
         me = asyncio.current_task()
         self._live_speak.add(me)
         me.add_done_callback(self._live_speak.discard)
@@ -3842,7 +3931,11 @@ class CallSession:
                             "judge interest at all (cut short, garbled, "
                             "barely any conversation) -- NOT the same as "
                             "maybe, which requires an actual hedged response\n"
-                            "Line 2: the caller's full delivery address if they "
+                            + ("  callback_requested = ONLY if they clearly asked to be called "
+                               "back later or agreed that the team should call them; a caller who was "
+                               "confused, annoyed or didn't understand the call is unclear or "
+                               "not_interested, never callback_requested\n" if self._voicezen_lead_client else "")
+                            + "Line 2: the caller's full delivery address if they "
                             "gave one during the call (combine all the parts "
                             "into one line), otherwise the literal word none\n"
                             "Line 3: a one-to-two sentence note for a sales "
