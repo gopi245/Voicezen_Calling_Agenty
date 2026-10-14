@@ -225,6 +225,10 @@ _CALL_SCREENER = re.compile(r"రికార్డ్ యువర్ నేమ
 # Numbers VoiceZen's website-callback calls just rang, so a callback from one
 # of them is greeted as such (kept in memory; a restart forgets them).
 _RECENT_LEAD_CALLS: dict[str, float] = {}
+# ADMIN -- transfer numbers of database-only clients (set per call from the
+# dashboard's bot settings), so /transfer-xml can tell a real target from an
+# invented one without those clients being in clients_registry.py.
+_DB_TRANSFER_TARGETS: set[str] = set()
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -958,7 +962,8 @@ async def transfer_xml(request: Request):
     client's own number as caller ID so the team sees who it is."""
     to = request.query_params.get("to", "")
     caller_id = request.query_params.get("from", "")
-    if not re.fullmatch(r"\+\d{10,15}", to) or not any(c.get("transfer_to") == to for c in CLIENTS_REGISTRY.values()):
+    known = any(c.get("transfer_to") == to for c in CLIENTS_REGISTRY.values()) or to in _DB_TRANSFER_TARGETS
+    if not re.fullmatch(r"\+\d{10,15}", to) or not known:
         log.error("transfer-xml: refused target %r", to)
         return PlainTextResponse('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
                                  media_type="application/xml")
@@ -1006,6 +1011,141 @@ async def stream_status(request: Request):
     form = await request.form()
     log.info("stream-status: event=%s call=%s", form.get("Event"), form.get("CallUUID"))
     return PlainTextResponse("OK")
+
+
+# ---------------------------------------------------------------- simulation
+
+_SIMULATE_SCENARIO_PROMPT = (
+    "You write test callers for a phone agent. Below are the agent's instructions. "
+    'Reply with ONLY a JSON array, no markdown: [{"title": "...", "turns": ["...", "..."]}] '
+    "of exactly 6 scenarios. Each scenario is one caller; turns are ONLY the caller's spoken "
+    "lines (3 to 6 short lines each), in LANGUAGE, written the way phone speech recognition "
+    "hears them (casual, sometimes slightly misheard). Cover exactly these six callers: "
+    "1) genuinely interested, answers everything and agrees at the end; "
+    "2) asks the prices/fees for the options the instructions name; "
+    "3) confused, with one noisy half-garbled line in the middle; "
+    "4) asks two things the instructions have no answer for; "
+    "5) asks to talk to a real person or the team; "
+    "6) polite but not interested, ends quickly. English titles."
+)
+
+
+def _simulate_issues(bot: dict, transcript: list[dict]) -> list[str]:
+    """The mistakes every real deployment hit first (SR Electrical, VoiceZen),
+    checked automatically so a dashboard-built bot finds them before launch."""
+    issues: list[str] = []
+    agent = [t["text"] for t in transcript if t["who"] == "agent"]
+    asked: dict[str, int] = {}
+    for a in agent:
+        q = re.split(r"(?<=[.!?])\s+", a.strip())[-1]
+        if q.endswith("?"):
+            key = re.sub(r"[\s?.!,]+", " ", q).strip()
+            asked[key] = asked.get(key, 0) + 1
+    for q, n in asked.items():
+        if n >= 3:
+            issues.append(f'asked the same question {n} times: "{q[:70]}?"')
+    for a in agent:
+        if len(a) > 300:
+            issues.append(f'reply too long to speak ({len(a)} characters): "{a[:60]}..."')
+        if re.search(r"[0-9]", a):
+            issues.append(f'said digits instead of words: "{a[:70]}"')
+        if re.search(r"ఇంకా ఏ(దైనా|మైనా)|anything else", a, re.I):
+            issues.append('ended a reply with an "anything else?" question')
+        if re.search(r"అద్భుతం|సూపర్|wonderful|awesome|amazing", a, re.I):
+            issues.append(f'over-praising, not how a counsellor talks: "{a[:60]}"')
+    topics = bot.get("transfer_topics")
+    phrase = bot.get("transfer_phrase") or ""
+    if topics and phrase:
+        for i, t in enumerate(transcript):
+            try:
+                if t["who"] != "caller" or not re.search(topics, t["text"], re.I):
+                    continue
+            except re.error:
+                break
+            nxt = next((x["text"] for x in transcript[i + 1:] if x["who"] == "agent"), "")
+            if phrase not in nxt:
+                issues.append(f'answered an out-of-script question itself instead of transferring: "{t["text"][:60]}"')
+    for i, t in enumerate(transcript):
+        if t["who"] != "caller":
+            continue
+        for r in bot.get("price_rules") or []:
+            try:
+                if not re.search(str(r.get("pattern") or ""), t["text"], re.I):
+                    continue
+            except re.error:
+                continue
+            nxt = next((x["text"] for x in transcript[i + 1:] if x["who"] == "agent"), "")
+            want = str(r.get("line") or "")[:25]
+            if want and want not in nxt:
+                issues.append(f'did not use the exact price line after "{t["text"][:50]}"')
+    return list(dict.fromkeys(issues))
+
+
+@app.post("/simulate")
+async def simulate(request: Request):
+    """ADMIN -- the dashboard's "Run test calls" button: text-only test
+    conversations against a client's script, checked for the problems real
+    calls taught us, so a reseller finds them before a caller does. No phone
+    line, nothing logged or billed."""
+    if DIAL_SECRET and request.headers.get("x-dial-secret") != DIAL_SECRET:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    greeting = str(body.get("greeting") or "").strip()
+    instructions = str(body.get("instructions") or "").strip()
+    if not greeting or not instructions:
+        return JSONResponse({"error": "greeting and instructions are required"}, status_code=400)
+    bot = body.get("bot") if isinstance(body.get("bot"), dict) else {}
+    language = str(body.get("language") or "Telugu")
+    scenarios = None
+    for attempt in range(2):
+        try:
+            # Six scenarios of Telugu lines overflow the 400-token reply cap
+            # calls run on, so this one request gets its own ceiling.
+            raw = await asyncio.to_thread(functools.partial(llm_reply, max_tokens=4000), [
+                {"role": "system", "content": _SIMULATE_SCENARIO_PROMPT.replace("LANGUAGE", language)},
+                {"role": "user", "content": instructions[:8000]},
+            ])
+            # The model sometimes wraps the JSON in prose or fences: keep
+            # only the outermost [...] before parsing.
+            i, j = raw.find("["), raw.rfind("]")
+            scenarios = json.loads(raw[i:j + 1] if 0 <= i < j else raw)
+            assert isinstance(scenarios, list) and scenarios
+            break
+        except Exception:
+            scenarios = None
+            log.exception("simulate: could not build scenarios (attempt %d)", attempt + 1)
+    if not scenarios:
+        return JSONResponse({"error": "could not build test scenarios, try again"}, status_code=502)
+
+    system = _instructions_no_livekit(instructions)
+    fixed = str(bot.get("reply_language") or "").strip()
+
+    async def run(sc: dict) -> dict:
+        msgs = [{"role": "system", "content": system}, {"role": "assistant", "content": greeting}]
+        transcript = [{"who": "agent", "text": greeting}]
+        for turn in list(sc.get("turns") or [])[:8]:
+            turn = str(turn)[:300]
+            msgs.append({"role": "user", "content": turn})
+            send = msgs + ([{"role": "system", "content": (
+                f"This line speaks {fixed} only. Write this whole reply in {fixed}, whatever language "
+                f"the caller used.")}] if fixed else [])
+            try:
+                reply = (await asyncio.to_thread(llm_reply, send)).strip()
+            except Exception as e:
+                reply = f"(error: {e})"
+            msgs.append({"role": "assistant", "content": reply})
+            transcript += [{"who": "caller", "text": turn},
+                           {"who": "agent", "text": _strip_markers(reply).strip()}]
+        return {"title": str(sc.get("title") or "Scenario")[:80], "transcript": transcript,
+                "issues": _simulate_issues(bot, transcript)}
+
+    results = await asyncio.gather(*(run(s) for s in scenarios[:6] if isinstance(s, dict)))
+    return JSONResponse({"scenarios": list(results),
+                         "passed": sum(1 for r in results if not r["issues"]),
+                         "total": len(results)})
 
 
 # ---------------------------------------------------------------- Sarvam STT
@@ -1859,7 +1999,8 @@ async def llm_stream(session: aiohttp.ClientSession, messages: list[dict], model
         yield piece
 
 
-def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None) -> str:
+def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None,
+              max_tokens: int | None = None) -> str:
     """One reply from Gemini. `model` is an admin-chosen model for this
     client; if it isn't one of SELECTABLE_LLM_MODELS, or it fails, the reply
     comes from LLM_MODEL instead -- a bad setting costs one slow turn, never
@@ -1869,10 +2010,10 @@ def llm_reply(messages: list[dict], attempts: int = 3, model: str | None = None)
     chosen = model if model in SELECTABLE_LLM_MODELS and not SELECTABLE_LLM_MODELS[model].get("provider") else LLM_MODEL
     if chosen != LLM_MODEL:
         try:
-            return _gemini_reply(messages, chosen, attempts=2)
+            return _gemini_reply(messages, chosen, attempts=2, max_tokens=max_tokens)
         except Exception:
             log.exception("chosen model %s failed -- falling back to %s", chosen, LLM_MODEL)
-    return _gemini_reply(messages, LLM_MODEL, attempts)
+    return _gemini_reply(messages, LLM_MODEL, attempts, max_tokens=max_tokens)
 
 
 # ---------------------------------------------------------- streaming replies
@@ -1959,7 +2100,8 @@ async def gemini_stream(session: aiohttp.ClientSession, messages: list[dict], mo
                         yield piece
 
 
-def _gemini_reply(messages: list[dict], model: str, attempts: int) -> str:
+def _gemini_reply(messages: list[dict], model: str, attempts: int,
+                  max_tokens: int | None = None) -> str:
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     contents = [
         {"role": "model" if m["role"] == "assistant" else "user",
@@ -1969,7 +2111,7 @@ def _gemini_reply(messages: list[dict], model: str, attempts: int) -> str:
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": contents,
-        "generationConfig": {"maxOutputTokens": LLM_MAX_TOKENS, "temperature": 0.2},
+        "generationConfig": {"maxOutputTokens": max_tokens or LLM_MAX_TOKENS, "temperature": 0.2},
     }
     if SELECTABLE_LLM_MODELS.get(model, {}).get("no_thinking"):
         body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
@@ -2290,6 +2432,55 @@ class CallSession:
         log.info("ai settings: model=%s voices=%s speed=%s stt=%s multilingual=%s",
                  self._llm_model or LLM_MODEL, self._voice_overrides, self._tts_speed or 1,
                  self._stt_language, self._follow_caller_language)
+        if isinstance(ai.get("bot"), dict):
+            self._apply_bot_settings(ai["bot"])
+
+    def _apply_bot_settings(self, bot: dict) -> None:
+        """ADMIN -- per-client switches from the dashboard's bot settings
+        (agent_profiles.ai_settings.bot, validated in client-admin.ts): the
+        same levers SR Electrical runs on from clients_registry.py, so a
+        client built entirely in the dashboard gets the newer engine, the
+        exact-price rules, the transfer and the repeat limits without a code
+        change. Anything missing keeps the code's behaviour."""
+        client = dict(self.client or {})
+        if bot.get("engine") == "new":
+            client["engine"] = "new"
+            self._legacy_engine = False
+        if isinstance(bot.get("reply_language"), str) and bot["reply_language"].strip():
+            client["reply_language"] = bot["reply_language"].strip()
+        for flag in ("repeat_guard", "join_andi"):
+            if isinstance(bot.get(flag), bool):
+                client[flag] = bot[flag]
+        if isinstance(bot.get("speech_fixes"), dict):
+            client["speech_fixes"] = {str(k): str(v) for k, v in bot["speech_fixes"].items() if str(k)}
+        for key in ("stt_prompt", "goodbye_phrase", "transfer_phrase"):
+            if isinstance(bot.get(key), str) and bot[key].strip():
+                client[key] = bot[key].strip()
+        topics = bot.get("transfer_topics")
+        if isinstance(topics, str) and topics.strip():
+            try:
+                re.compile(topics)
+                client["transfer_topics"] = topics.strip()
+            except re.error:
+                log.error("bot settings: bad transfer_topics pattern ignored")
+        to = str(bot.get("transfer_to") or "").strip()
+        if re.fullmatch(r"\+\d{10,15}", to):
+            client["transfer_to"] = to
+            _DB_TRANSFER_TARGETS.add(to)
+        rules = bot.get("price_rules")
+        if isinstance(rules, list):
+            lines = []
+            for r in rules[:20]:
+                if not (isinstance(r, dict) and r.get("pattern") and r.get("line")):
+                    continue
+                try:
+                    re.compile(str(r["pattern"]))
+                except re.error:
+                    continue
+                lines.append((str(r["pattern"]), str(r["line"])))
+            if lines:
+                client["qualification_lines"] = lines
+        self.client = client
 
     def _on_detected_language(self, code: str) -> None:
         """Sarvam reported which language the caller just spoke.
@@ -3123,11 +3314,12 @@ class CallSession:
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         offers = sum(1 for m in self.messages
                      if m["role"] == "assistant" and "కనెక్ట్ చేయమంటార" in (m["content"] or ""))
+        sr = (self.client or {}).get("client_id") == "sr_electrical"
         said_no_placement = any(m["role"] == "assistant" and "హోమ్ ఆటోమేషన్" in (m["content"] or "")
                                 and "ప్లేస్‌మెంట్ లేద" in (m["content"] or "") for m in self.messages)
         iem_quoted = any(m["role"] == "assistant" and ("వంద శాతం" in (m["content"] or "")
                                                        or "ప్రాక్టికల్స్" in (m["content"] or "")) for m in self.messages)
-        if said_no_placement and not iem_quoted and re.search(r"జాబ్|ఉద్యోగం|job|ప్లేస్‌మెంట్", last, re.I):
+        if sr and said_no_placement and not iem_quoted and re.search(r"జాబ్|ఉద్యోగం|job|ప్లేస్‌మెంట్", last, re.I):
             # A real call (2026-10-12): a Home Automation caller kept asking
             # for a job and was transferred / sent off instead of being told
             # which course has placement.
@@ -3140,7 +3332,7 @@ class CallSession:
         qual_known = iem_quoted or any(m["role"] == "user" and re.search(
             r"బీటెక్|బి\.?టెక్|b\.?tech|డిప్లొమా|డిప్లమా|diploma|ఐటీఐ|ITI|ఇంటర్|బీఎస్సీ|బి\.?కాం|డిగ్రీ|degree|పదో|టెన్త్|10th",
             m["content"] or "", re.I) for m in self.messages)
-        if iem_chosen and not qual_known and not said_no_placement:
+        if sr and iem_chosen and not qual_known and not said_no_placement:
             notes.append({"role": "system", "content": (
                 "They want I.E.M but you don't know their qualification yet. Answer any question they just asked, "
                 "then end this reply by asking it -- \"మీరు బీటెక్, డిప్లొమా, ఐటీఐ లేదా వేరే ఏం చదివారండి?\" -- "
