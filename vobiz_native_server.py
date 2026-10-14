@@ -229,6 +229,15 @@ _RECENT_LEAD_CALLS: dict[str, float] = {}
 # dashboard's bot settings), so /transfer-xml can tell a real target from an
 # invented one without those clients being in clients_registry.py.
 _DB_TRANSFER_TARGETS: set[str] = set()
+# The connect-to-the-team sentences in every builder language (Telugu,
+# English, Hindi — the wording set by scriptBuilder.ts TRANSFER_LINES), so
+# the offer limit, the "no is not a transfer" check and the question-back
+# check work for English and Hindi bots exactly as they do for Telugu.
+_CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|కి connect చేయమంటార|connect you to our team|टीम से कनेक्ट कर")
+_CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్నాను|కి connect చేస్తున్నాను|connecting you to our team|टीम से कनेक्ट कर रही")
+_DECLINE_RX = re.compile(
+    r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
+    r"no\b|nope|not now|later|नहीं|अभी नहीं|रहने दो|बाद में|मत)", re.I)
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -3212,7 +3221,7 @@ class CallSession:
             return False
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         last = (self._last_caller_words() or "").strip()
-        if "కనెక్ట్ చేయమంటార" not in prev or not last:
+        if not _CONNECT_OFFER_RX.search(prev) or not last:
             return False
         topics = client.get("transfer_topics")
         if topics and re.search(topics, last, re.I):
@@ -3244,7 +3253,7 @@ class CallSession:
         if not (self.client or {}).get("transfer_to"):
             return False
         return sum(1 for m in self.messages if m["role"] == "assistant"
-                   and "కనెక్ట్ చేయమంటార" in (m["content"] or "")) >= 2
+                   and _CONNECT_OFFER_RX.search(m["content"] or "")) >= 2
 
     def _declined_transfer(self) -> bool:
         """The caller just said no ("వద్దండి") to our offer to connect them.
@@ -3253,8 +3262,7 @@ class CallSession:
             return False
         last = (self._last_caller_words() or "").strip()
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
-        return bool("కనెక్ట్ చేయమంటార" in prev and re.match(
-            r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|no|nope|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత)", last, re.I))
+        return bool(_CONNECT_OFFER_RX.search(prev) and _DECLINE_RX.match(last))
 
     def _repeat_guard_note(self) -> list[dict]:
         """Clients with "repeat_guard" (SR Electrical) -- the questions this
@@ -3313,7 +3321,7 @@ class CallSession:
         topics = (self.client or {}).get("transfer_topics")
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         offers = sum(1 for m in self.messages
-                     if m["role"] == "assistant" and "కనెక్ట్ చేయమంటార" in (m["content"] or ""))
+                     if m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or ""))
         sr = (self.client or {}).get("client_id") == "sr_electrical"
         said_no_placement = any(m["role"] == "assistant" and "హోమ్ ఆటోమేషన్" in (m["content"] or "")
                                 and "ప్లేస్‌మెంట్ లేద" in (m["content"] or "") for m in self.messages)
@@ -3386,7 +3394,9 @@ class CallSession:
         if fixed:
             return self.messages + [{"role": "system", "content": (
                 f"This line speaks {fixed} only. Write this whole reply in {fixed}, whatever language the caller "
-                f"used; if they don't understand {fixed}, apologise briefly in {fixed} and keep it very simple.")}] + note
+                f"used; if they don't understand {fixed}, apologise briefly in {fixed} and keep it very simple. "
+                f"Callers mixing English words into {fixed} is normal Indian speech, not a language change -- "
+                f"understand it and keep replying in {fixed}; common English business words inside the reply are fine.")}] + note
         # The latest caller turn that isn't a lone "hello"/"ok" decides it.
         lang = None
         for m in reversed(self.messages):
@@ -3473,10 +3483,10 @@ class CallSession:
                         # onto four answers in a row.
                         log.info("dropped a question already asked twice: %r", say)
                         continue
-                    if say and self._offer_limit_reached() and "కనెక్ట్ చేయమంటార" in say:
+                    if say and self._offer_limit_reached() and _CONNECT_OFFER_RX.search(say):
                         log.info("dropped a third offer to connect: %r", say)
                         continue
-                    if say and "కనెక్ట్ చేస్తున్నాను" in say and self._question_after_offer():
+                    if say and _CONNECT_GO_RX.search(say) and self._question_after_offer():
                         log.info("dropped a transfer sentence: they asked a question, not yes: %r", say)
                         continue
                     if say:
