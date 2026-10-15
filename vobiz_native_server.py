@@ -1452,7 +1452,7 @@ SELECTABLE_VOICES = {
     "4fc34582-f0e0-418d-8d0b-2738637d9229": "en-in",  # Aanya
     "bae3d3fe-64f9-4d2a-80b2-607ddff23528": "en-in",  # Roger
 }
-SELECTABLE_SPEEDS = (0.8, 0.9, 1.0, 1.1, 1.2)
+SELECTABLE_SPEEDS = (0.8, 0.85, 0.9, 1.0, 1.1, 1.2)
 
 
 def resolve_voice(language: str | None, overrides: dict | None = None) -> tuple[str, str]:

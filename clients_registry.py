@@ -48,9 +48,9 @@ CLIENTS: dict[str, dict] = {
         # are understood (hi-IN).
         "stt_language": "hi-IN",
         "tts_language": "hi",
-        # Slower than normal -- 1.0 sounded fast on a real call, and 0.9
-        # was still a touch quick (owner, 2026-10-15).
-        "tts_speed": 0.8,
+        # Slower than normal -- 1.0 sounded fast on a real call, 0.9 still
+        # a touch quick, 0.8 too slow; 0.85 is the owner's pick (2026-10-15).
+        "tts_speed": 0.85,
         "reply_language": "Hindi",
         "repeat_guard": True,
         "multilingual": False,
