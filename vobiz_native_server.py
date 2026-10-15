@@ -3532,6 +3532,11 @@ class CallSession:
         if line:
             # The fee is picked here from what they studied, never by the
             # model: a test replay quoted the B.Tech fee to an ITI student.
+            if line.startswith("సారీ"):
+                # A not-eligible line: no fee, no details collected after it.
+                return [{"role": "system", "content": (
+                    f"Say this sentence WORD FOR WORD: \"{line}\" Do NOT give any fee and do NOT ask their "
+                    "name or start date. If they ask what they can do, offer to connect them to the team.")}]
             return [{"role": "system", "content": (
                 f"They just told you their qualification. Say this sentence WORD FOR WORD first: \"{line}\" -- "
                 "then ask the next step you still need (their name, or when they can start). Do not change any "
