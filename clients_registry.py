@@ -36,10 +36,10 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918071580257",
         "prompt_module": "script_voicezen",
-        # Background noise OFF (2026-10-15): with it on, replies after the
-        # greeting never reached the caller on a real call -- see server
-        # notes; re-enable only after that bug is fixed and a real call
-        # confirms it.
+        # A faint office behind the whole call. Re-enabled 2026-10-15 after
+        # the dead-air cause was fixed (a stalled TTS request had no
+        # first-byte deadline or retry; websocket sends now serialized).
+        "background_noise": "low",
         # Telugu only, at the owner's request (2026-10-12): back from
         # multilingual auto-detect to plain Telugu. Hindi callers have their
         # own line (+918065353946). Listening in te-IN still understands the
@@ -65,10 +65,10 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918065353946",
         "prompt_module": "script_sr_electrical",
-        # Background noise OFF (2026-10-15): with it on, replies after the
-        # greeting never reached the caller on a real call -- see server
-        # notes; re-enable only after that bug is fixed and a real call
-        # confirms it.
+        # A faint office behind the whole call. Re-enabled 2026-10-15 after
+        # the dead-air cause was fixed (a stalled TTS request had no
+        # first-byte deadline or retry; websocket sends now serialized).
+        "background_noise": "low",
         "engine": "new",
         "stt_language": "te-IN",
         "tts_language": "te",

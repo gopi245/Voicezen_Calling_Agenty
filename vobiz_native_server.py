@@ -1706,24 +1706,42 @@ async def synthesize(session: aiohttp.ClientSession, text: str, language: str = 
     """_synthesize_raya, with finished audio kept for VoiceZen (see _TTS_CACHE).
     Only a synthesis that ran to the end is kept, so a reply cut off by a
     barge-in never leaves half a line in the cache."""
-    if legacy or len(text) > _TTS_CACHE_MAX_CHARS:
+    if legacy:
+        # Gundusoodi's path, byte-for-byte as before: no cache, no retry.
         async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy, provider):
             yield chunk
         return
-    key = (text, language, tuple(sorted((voice_overrides or {}).items())), speed, provider)
-    cached = _TTS_CACHE.get(key)
-    if cached is not None:
-        _TTS_CACHE.move_to_end(key)
-        for chunk in cached:
-            yield chunk
-        return
-    chunks: list[bytes] = []
-    async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy, provider):
-        chunks.append(chunk)
-        yield chunk
-    _TTS_CACHE[key] = chunks
-    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
-        _TTS_CACHE.popitem(last=False)
+    key = None
+    if len(text) <= _TTS_CACHE_MAX_CHARS:
+        key = (text, language, tuple(sorted((voice_overrides or {}).items())), speed, provider)
+        cached = _TTS_CACHE.get(key)
+        if cached is not None:
+            _TTS_CACHE.move_to_end(key)
+            for chunk in cached:
+                yield chunk
+            return
+    # A synthesis that dies before its FIRST chunk gets one silent retry: a
+    # stalled provider request (2026-10-15) must cost ~4s, never dead air.
+    # Once audio has started flowing, a failure raises as before -- retrying
+    # mid-sentence would repeat words in the caller's ear.
+    for attempt in (1, 2):
+        chunks: list[bytes] = []
+        try:
+            async for chunk in _synthesize_raya(session, text, language, voice_overrides, speed, legacy, provider):
+                chunks.append(chunk)
+                yield chunk
+        except Exception:
+            if chunks or attempt == 2:
+                raise
+            log.warning("tts produced nothing for %r -- retrying once", text[:60])
+            continue
+        if chunks and key is not None:
+            _TTS_CACHE[key] = chunks
+            while len(_TTS_CACHE) > _TTS_CACHE_MAX:
+                _TTS_CACHE.popitem(last=False)
+        if chunks or attempt == 2:
+            return
+        log.warning("tts stream ended with no audio for %r -- retrying once", text[:60])
 
 
 VOICEZEN_TTS_PROVIDER = os.getenv("VOICEZEN_TTS_PROVIDER", "raya").strip().lower()
@@ -1807,7 +1825,10 @@ async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: 
         "https://hub.getraya.app/v1/text-to-speech/stream",
         headers={"X-API-Key": RAYA_API_KEY, "Content-Type": "application/json",
                  "Accept": "text/event-stream"},
-        json=body, timeout=aiohttp.ClientTimeout(total=30),
+        # sock_read: a stall mid-stream surfaces in 4s instead of silently
+        # eating the 30s budget -- a real call (2026-10-15) sat in dead air
+        # for 8+ seconds because a stalled request had no first-byte deadline.
+        json=body, timeout=aiohttp.ClientTimeout(total=30, sock_connect=4, sock_read=4),
     ) as r:
         if r.status != 200:
             body_text = await r.text()
@@ -2413,6 +2434,7 @@ class CallSession:
         self._amb_pos = 0
         self._amb_mul = 0
         self._amb_task = None
+        self._send_lock = asyncio.Lock()
         self._screener_answered = False
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
@@ -2905,6 +2927,8 @@ class CallSession:
 
     def _amb_next(self, nbytes: int) -> bytes:
         """The next slice of the ambience loop, scaled for this client."""
+        if not _AMBIENCE:
+            return bytes(nbytes)
         out = b""
         pos = self._amb_pos
         while len(out) < nbytes:
@@ -3822,8 +3846,12 @@ class CallSession:
             self._done.set()
 
     async def _send(self, obj: dict):
+        # One frame at a time: the ambience loop and a reply's frames write
+        # to the same websocket, and concurrent sends on a Starlette
+        # websocket are not safe.
         try:
-            await self.vobiz_ws.send_text(json.dumps(obj))
+            async with self._send_lock:
+                await self.vobiz_ws.send_text(json.dumps(obj))
         except Exception:
             pass
 
