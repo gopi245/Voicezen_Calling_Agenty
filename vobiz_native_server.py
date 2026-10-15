@@ -3405,8 +3405,10 @@ class CallSession:
         real call (2026-10-15) despite being told it knows it."""
         if not (self.client or {}).get("repeat_guard"):
             return False
-        asks_name = "పేరు చెప్తార" in sentence or "పేరు ఏంట" in sentence
-        asks_start = "ఎప్పటి నుంచి" in sentence and "స్టార్ట్" in sentence
+        asks_name = ("పేరు చెప్తార" in sentence or "పేరు ఏంట" in sentence
+                     or "नाम बताइए" in sentence or "नाम क्या है" in sentence)
+        asks_start = (("ఎప్పటి నుంచి" in sentence and "స్టార్ట్" in sentence)
+                      or "कब आ सकते" in sentence or "कब आ सकती" in sentence)
         if not (asks_name or asks_start):
             return False
         for i, m in enumerate(self.messages[:-1]):
@@ -3418,14 +3420,18 @@ class CallSession:
             ans = (nxt["content"] or "").strip()
             if not ans or ans.endswith("?") or _DECLINE_RX.match(ans):
                 continue
-            if asks_name and "పేరు చెప్తార" in (m["content"] or "") and _looks_like_name(ans):
+            prev_q = m["content"] or ""
+            prev_asks_name = "పేరు చెప్తార" in prev_q or "नाम बताइए" in prev_q or "नाम क्या है" in prev_q
+            prev_asks_start = "ఎప్పటి నుంచి" in prev_q or "कब आ सकते" in prev_q or "कब आ सकती" in prev_q
+            if asks_name and prev_asks_name and _looks_like_name(ans):
                 return True
             # The "answer" must actually look like a time: a caller echoing
             # "ట్రైనింగ్." was taken as the start date on a real call
             # (2026-10-15) and the legitimate question got dropped.
-            if (asks_start and "ఎప్పటి నుంచి" in (m["content"] or "")
+            if (asks_start and prev_asks_start
                     and re.search(r"రేప|ఎల్లుండి|నుంచి|వారం|నెల|రోజు|సోమ|మంగళ|బుధ|గురు|శుక్ర|శని|ఆది|"
                                   r"జనవరి|ఫిబ్రవరి|మార్చి|ఏప్రిల్|మే|జూన్|జూలై|ఆగస్టు|సెప్టెంబర్|అక్టోబర్|నవంబర్|డిసెంబర్|"
+                                  r"कल|परसों|आज|से|हफ़्ते|हफ्ते|महीन|सोमवार|मंगल|बुध|गुरु|शुक्र|शनि|रविवार|"
                                   r"tomorrow|today|next|week|month|[0-9]", ans, re.I)):
                 return True
         return False
@@ -3589,10 +3595,11 @@ class CallSession:
             ans = nxt["content"].strip()
             if ans.endswith("?") or _DECLINE_RX.match(ans):
                 continue
-            if "పేరు చెప్తార" in (m["content"] or "") and _looks_like_name(ans):
+            pq = m["content"] or ""
+            if ("పేరు చెప్తార" in pq or "नाम बताइए" in pq or "नाम क्या है" in pq) and _looks_like_name(ans):
                 known.append(f"their name ({ans.rstrip('.')})")
-            elif "ఎప్పటి నుంచి" in (m["content"] or ""):
-                known.append(f"when they can start ({ans.rstrip('.')})")
+            elif "ఎప్పటి నుంచి" in pq or "कब आ सकते" in pq or "कब आ सकती" in pq:
+                known.append(f"when they can start / visit ({ans.rstrip('.')})")
         if known:
             # A real call (2026-10-15) asked the name again after the caller
             # switched courses; once answered, these never come back.
@@ -3663,7 +3670,7 @@ class CallSession:
                 f"NOT transfer and do NOT offer to connect -- reply ONLY: \"{noinfo}\" They can still be connected "
                 "later if they themselves ask for the team.")}]
         if last.rstrip().endswith("?") or re.search(
-                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|నా\?)", last):
+                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|बोलो|बताओ|बताइए|कितना|कितनी|क्या|कब|कहाँ|कैसे|मिलेगा|है ना|నా\?)", last):
             fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
                 (self.client or {}).get("reply_language") or "Telugu", _TEAM_WILL_CALL["Telugu"]) + "\""
                         if self._transfer_declined_standing() else "the transfer sentence")
