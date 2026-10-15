@@ -2760,9 +2760,16 @@ class CallSession:
                 # VOICEZEN TEST -- a lead ringing back after our website-callback
                 # call (2026-10-13) got the cold welcome, as if we'd never called.
                 greeting = LEAD_CALLBACK_GREETING
-                instructions = (instructions or "") + INSTANT_LEAD_NOTE.replace(
+                instructions = importlib.import_module("script_voicezen").INSTRUCTIONS + INSTANT_LEAD_NOTE.replace(
                     "The opening line already said who you are and why you called",
                     "We called them a little earlier and they are calling back; the opening line already said so")
+                # The callback conversation is VoiceZen's own, in Telugu --
+                # whatever inbound persona the number carries.
+                self.client = dict(self.client)
+                self.client["reply_language"] = "Telugu"
+                self.client.pop("stt_prompt", None)
+                self._stt_language = "te-IN"
+                self._tts_language = "te"
                 log.info("caller %s is a website lead we called earlier -- callback greeting", caller_no)
             log.info("serving client '%s' (%s call, identified by %s, stt=%s multilingual=%s)",
                       self.client["client_id"], self._direction, self._client_number,
@@ -2782,11 +2789,16 @@ class CallSession:
         if self._campaign and self._campaign.get("demo_call"):
             self._legacy_engine = False
         if self._voicezen_lead_client:
-            # Telugu-only VoiceZen line settings (reply language, voice).
+            # The lead pitch is VoiceZen's Telugu script, so Telugu settings
+            # are FORCED here -- the registry entry may belong to a different
+            # inbound persona on the same number (the Hindi real-estate demo
+            # since 2026-10-15).
             self._legacy_engine = False
-            self.client = self._voicezen_lead_client
-            self._stt_language = self.client.get("stt_language") or "te-IN"
-            self._tts_language = self.client.get("tts_language") or "te"
+            self.client = dict(self._voicezen_lead_client)
+            self.client["reply_language"] = "Telugu"
+            self.client.pop("stt_prompt", None)
+            self._stt_language = "te-IN"
+            self._tts_language = "te"
             self._tts_provider = self.client.get("tts_provider")
         customer_id = self._campaign.get("customer_id") if self._campaign else self.client.get("customer_id")
         # VOICEZEN TEST -- answer() already started these (see there).
@@ -3330,6 +3342,10 @@ class CallSession:
         the model kept answering "How can I help you today?" (call 2764),
         dropping the pitch. Say what to do for that one reply."""
         if (self.client or {}).get("client_id") != "voicezen" or self._campaign:
+            return []
+        if (self.client or {}).get("prompt_module") not in (None, "script_voicezen", "script_voicezen_hi"):
+            # The number hosts a different inbound persona (the real-estate
+            # demo): this note's VoiceZen pitch would be wrong.
             return []
         users = [m for m in self.messages if m["role"] == "user"]
         if len(users) != 1 or not _FILLER.match(users[0]["content"] or ""):

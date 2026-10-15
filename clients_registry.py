@@ -35,18 +35,21 @@ CLIENTS: dict[str, dict] = {
             else None
         ),
         "dial_from": "+918071580257",
-        "prompt_module": "script_voicezen",
+        # INBOUND calls hear the Hindi real-estate demo (owner's request,
+        # 2026-10-15). Outbound website-lead callbacks and dashboard demo
+        # calls still run VoiceZen's own Telugu pitch -- server.py forces
+        # Telugu settings on those paths regardless of this entry.
+        "prompt_module": "script_realestate_hi",
         # A faint office behind the whole call. Re-enabled 2026-10-15 after
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
         "background_noise": "low",
-        # Telugu only, at the owner's request (2026-10-12): back from
-        # multilingual auto-detect to plain Telugu. Hindi callers have their
-        # own line (+918065353946). Listening in te-IN still understands the
-        # English business words Telugu callers mix in.
-        "stt_language": "te-IN",
-        "tts_language": "te",
-        "reply_language": "Telugu",
+        # Hindi only for the inbound real-estate demo; mixed English words
+        # are understood (hi-IN).
+        "stt_language": "hi-IN",
+        "tts_language": "hi",
+        "reply_language": "Hindi",
+        "repeat_guard": True,
         "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
