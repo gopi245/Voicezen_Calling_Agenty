@@ -3413,6 +3413,18 @@ class CallSession:
         # ask its own next question.
         last = self._last_caller_words() or ""
         if self._declined_transfer():
+            # A real call (2026-10-15) packed the no and a question into one
+            # sentence ("వద్దండి, ఎక్స్పెక్టెడ్ శాలరీ ఎంతండి?") and the
+            # question was swallowed -- so a decline that carries a question
+            # gets both: the no accepted briefly, the question answered.
+            if re.search(r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|ఏమిటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|"
+                         r"చేయొచ్చా|\?)", re.sub(r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|"
+                                                   r"అవసరం లేదు|ఇప్పుడు వద్దు|no|nope|not now|नहीं)[,.\s]*", "",
+                                                   last, flags=re.I), re.I):
+                return [{"role": "system", "content": (
+                    f"The caller said no to connecting AND asked a question in the same sentence: \"{last}\". "
+                    "Do NOT transfer and do NOT say the transfer sentence. Start with a brief \"పర్లేదండి.\" "
+                    "then answer their question from the facts in your instructions in the same reply.")}]
             return [{"role": "system", "content": (
                 f"The caller just said \"{last}\" -- that is NO to connecting them to the team. Do NOT transfer and "
                 "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
