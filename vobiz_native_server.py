@@ -263,7 +263,7 @@ _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|
 _CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్నాను|కి connect చేస్తున్నాను|connecting you to our team|टीम से कनेक्ट कर रही")
 _DECLINE_RX = re.compile(
     r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
-    r"no\b|nope|not now|later|नहीं|अभी नहीं|रहने दो|बाद में|मत)", re.I)
+    r"నో\b|no\b|nope|not now|later|नहीं|अभी नहीं|रहने दो|बाद में|मत)", re.I)
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -3417,10 +3417,12 @@ class CallSession:
             # sentence ("వద్దండి, ఎక్స్పెక్టెడ్ శాలరీ ఎంతండి?") and the
             # question was swallowed -- so a decline that carries a question
             # gets both: the no accepted briefly, the question answered.
-            if re.search(r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|ఏమిటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|"
-                         r"చేయొచ్చా|\?)", re.sub(r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|"
-                                                   r"అవసరం లేదు|ఇప్పుడు వద్దు|no|nope|not now|नहीं)[,.\s]*", "",
-                                                   last, flags=re.I), re.I):
+            # Anything substantial after the no counts as a question, keyword
+            # or not -- STT garbled "ఎంతండి" into "అంటండి" on a real call
+            # (2026-10-15) and the keyword check missed it.
+            rest = re.sub(r"^(\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|"
+                          r"అవసరం లేదు|ఇప్పుడు వద్దు|నో|no|nope|not now|नहीं|అండి|సరే)[,.\s]*)+", "", last, flags=re.I)
+            if len(rest.strip()) >= 4:
                 return [{"role": "system", "content": (
                     f"The caller said no to connecting AND asked a question in the same sentence: \"{last}\". "
                     "Do NOT transfer and do NOT say the transfer sentence. Start with a brief \"పర్లేదండి.\" "
@@ -3448,6 +3450,26 @@ class CallSession:
                 f"They just told you their qualification. Say this sentence WORD FOR WORD first: \"{line}\" -- "
                 "then ask the next step you still need (their name, or when they can start). Do not change any "
                 "number and do not add any other fee.")}]
+        known = []
+        for i, m in enumerate(self.messages[:-1]):
+            if m["role"] != "assistant":
+                continue
+            nxt = self.messages[i + 1]
+            if nxt["role"] != "user" or not (nxt["content"] or "").strip():
+                continue
+            ans = nxt["content"].strip()
+            if ans.endswith("?") or _DECLINE_RX.match(ans):
+                continue
+            if "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4:
+                known.append(f"their name ({ans.rstrip('.')})")
+            elif "ఎప్పటి నుంచి" in (m["content"] or ""):
+                known.append(f"when they can start ({ans.rstrip('.')})")
+        if known:
+            # A real call (2026-10-15) asked the name again after the caller
+            # switched courses; once answered, these never come back.
+            notes.append({"role": "system", "content": (
+                "You already know " + " and ".join(dict.fromkeys(known)) +
+                ". NEVER ask for these again in this call, even after a course change -- use them.")})
         if self._question_after_offer():
             notes.append({"role": "system", "content": (
                 "You offered to connect them, and they replied with a question instead of yes/no. That is NOT a "
@@ -3673,6 +3695,17 @@ class CallSession:
                 raise
             log.exception("stream broke mid-reply -- ending the turn with what was said")
 
+        if not spoken_any and full.strip() and not self._legacy_engine:
+            # The repeat guard can drop a reply's ONLY sentence (a question
+            # already asked twice), which left dead air on a real call
+            # (2026-10-15) -- acknowledge instead of saying nothing.
+            filler = {"Telugu": "సరేనండి.", "English": "Alright.", "Hindi": "ठीक है जी।"}.get(
+                (self.client or {}).get("reply_language") or "Telugu", "సరేనండి.")
+            spoken_any = True
+            said.append(filler)
+            full = filler
+            await queue.put(filler)
+            log.info("every sentence was dropped -- acknowledged with %r instead of silence", filler)
         if not spoken_any and not full.strip():
             await queue.put(None)
             raise RuntimeError("stream produced no text")
