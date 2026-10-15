@@ -1825,6 +1825,11 @@ async def _synthesize_raya(session: aiohttp.ClientSession, text: str, language: 
             for i in range(0, len(pcm), chunk):
                 yield pcm[i:i + chunk]
             return
+    if not text.strip():
+        # A fragment that becomes empty after the spoken-text transforms made
+        # Raya answer HTTP 422 on two real calls (2026-10-15) -- nothing to say.
+        log.info("tts skipped: text empty after spoken-text transforms")
+        return
     voice_id, raya_lang = resolve_voice(language, voice_overrides)
     rate = speed if speed in SELECTABLE_SPEEDS else 1
     # ADMIN -- true only when an admin-chosen voice or speed is in play.
