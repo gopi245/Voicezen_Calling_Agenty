@@ -2332,6 +2332,17 @@ def db_client_entry(found: dict) -> dict:
 FIXED_LANGUAGES = {"te-IN": "te", "en-IN": "en", "hi-IN": "hi"}
 
 
+def _log_task_error(task: "asyncio.Task") -> None:
+    """Done-callback for fire-and-forget speak tasks: a task that dies after
+    being replaced (barge-in) otherwise logs an opaque "Task exception was
+    never retrieved" with no context."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning("a replaced speak task had failed quietly: %s", exc)
+
+
 # ---------------------------------------------------------------- call session
 
 class CallSession:
@@ -2774,6 +2785,7 @@ class CallSession:
             )
             self.messages.append({"role": "assistant", "content": blocked_message})
             self._speak_task = asyncio.create_task(self._speak(blocked_message, end_call=True))
+            self._speak_task.add_done_callback(_log_task_error)
             return
 
         if config_task is not None:
@@ -2829,11 +2841,13 @@ class CallSession:
         self.messages.append({"role": "assistant", "content": greeting})
         if self._legacy_engine:
             self._speak_task = asyncio.create_task(self._speak(greeting))
+            self._speak_task.add_done_callback(_log_task_error)
         else:
             async def _greet_after_lead_in(text=greeting):
                 await asyncio.sleep(GREETING_LEAD_IN_S)
                 await self._speak(text)
             self._speak_task = asyncio.create_task(_greet_after_lead_in())
+            self._speak_task.add_done_callback(_log_task_error)
         if not self._legacy_engine:
             # VOICEZEN TEST -- greeting first, then connect speech-to-text
             # while it plays: nobody answers a greeting they haven't heard.
@@ -3005,6 +3019,7 @@ class CallSession:
         log.info("caller silent %.0fs after our last line -- %s", SILENCE_PROMPT_S, "closing" if last else "asking if they can hear")
         self.messages.append({"role": "assistant", "content": text})
         self._speak_task = asyncio.create_task(self._speak(text, end_call=last))
+        self._speak_task.add_done_callback(_log_task_error)
 
     async def _on_transcript(self, text: str):
         """Buffer the transcript and (re)start the debounce timer. Sarvam
@@ -3021,6 +3036,7 @@ class CallSession:
                 log.info("call screener heard (%r) -- saying who is calling", text)
                 self.messages.append({"role": "assistant", "content": line})
                 self._speak_task = asyncio.create_task(self._speak(line))
+                self._speak_task.add_done_callback(_log_task_error)
             else:
                 log.info("ignored %r: a phone recording / screener announcement", text)
             return
@@ -3266,6 +3282,7 @@ class CallSession:
         end_call = _reply_wants_end_call(END_MARKER in reply, spoken, self._legacy_engine, self._last_caller_words())
         log.info("bot: %s%s", spoken, "  [END_CALL]" if end_call else "")
         self._speak_task = asyncio.create_task(self._speak(spoken, end_call=end_call, turn=turn))
+        self._speak_task.add_done_callback(_log_task_error)
         if turn is not None:
             turn["speak_task"] = self._speak_task
 
@@ -3350,9 +3367,16 @@ class CallSession:
             ans = (nxt["content"] or "").strip()
             if not ans or ans.endswith("?") or _DECLINE_RX.match(ans):
                 continue
-            if asks_name and "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4:
+            if (asks_name and "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4
+                    and not re.search(r"పేరు|ఏంటి|ఎందుకు|మళ్ళీ", ans)):
                 return True
-            if asks_start and "ఎప్పటి నుంచి" in (m["content"] or ""):
+            # The "answer" must actually look like a time: a caller echoing
+            # "ట్రైనింగ్." was taken as the start date on a real call
+            # (2026-10-15) and the legitimate question got dropped.
+            if (asks_start and "ఎప్పటి నుంచి" in (m["content"] or "")
+                    and re.search(r"రేప|ఎల్లుండి|నుంచి|వారం|నెల|రోజు|సోమ|మంగళ|బుధ|గురు|శుక్ర|శని|ఆది|"
+                                  r"జనవరి|ఫిబ్రవరి|మార్చి|ఏప్రిల్|మే|జూన్|జూలై|ఆగస్టు|సెప్టెంబర్|అక్టోబర్|నవంబర్|డిసెంబర్|"
+                                  r"tomorrow|today|next|week|month|[0-9]", ans, re.I)):
                 return True
         return False
 
@@ -3638,6 +3662,7 @@ class CallSession:
         # from the model -- that overlap is the whole point.
         self._speak_task = asyncio.create_task(
             self._speak_queue(queue, transcript_at, speech_seen_at, turn))
+        self._speak_task.add_done_callback(_log_task_error)
         if turn is not None:
             turn["speak_task"] = self._speak_task
         # VOICEZEN TEST -- Groq only ever runs for VoiceZen; every other
@@ -4058,6 +4083,7 @@ class CallSession:
             self._tts_language, INSTANT_LEAD_TIME_LIMIT_CLOSING["te"])
         self.messages.append({"role": "assistant", "content": closing})
         self._speak_task = asyncio.create_task(self._speak(closing, end_call=True))
+        self._speak_task.add_done_callback(_log_task_error)
 
     async def _start_vobiz_recording(self) -> None:
         """Ask Vobiz to record this call, both sides, at the carrier.
