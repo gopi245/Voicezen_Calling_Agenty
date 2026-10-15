@@ -36,8 +36,10 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918071580257",
         "prompt_module": "script_voicezen",
-        # A faint office behind the whole call (owner's choice, 2026-10-15).
-        "background_noise": "low",
+        # Background noise OFF (2026-10-15): with it on, replies after the
+        # greeting never reached the caller on a real call -- see server
+        # notes; re-enable only after that bug is fixed and a real call
+        # confirms it.
         # Telugu only, at the owner's request (2026-10-12): back from
         # multilingual auto-detect to plain Telugu. Hindi callers have their
         # own line (+918065353946). Listening in te-IN still understands the
@@ -63,8 +65,10 @@ CLIENTS: dict[str, dict] = {
         ),
         "dial_from": "+918065353946",
         "prompt_module": "script_sr_electrical",
-        # A faint office behind the whole call (owner's choice, 2026-10-15).
-        "background_noise": "low",
+        # Background noise OFF (2026-10-15): with it on, replies after the
+        # greeting never reached the caller on a real call -- see server
+        # notes; re-enable only after that bug is fixed and a real call
+        # confirms it.
         "engine": "new",
         "stt_language": "te-IN",
         "tts_language": "te",
