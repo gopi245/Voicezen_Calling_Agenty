@@ -3623,12 +3623,13 @@ class CallSession:
                 f"The caller asked: \"{last}\". Your instructions have NO answer for this. Do NOT invent one and "
                 f"do NOT transfer yet -- reply ONLY: \"{ask}\" and transfer only if they then say yes.")}]
         if last.rstrip().endswith("?") or re.search(
-                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|నా\?)", last):
+                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|నా\?)", last):
             fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
                 (self.client or {}).get("reply_language") or "Telugu", _TEAM_WILL_CALL["Telugu"]) + "\""
                         if self._transfer_declined_standing() else "the transfer sentence")
             notes.append({"role": "system", "content": (
-                "The caller's last message is a question. Answer that question first, in this reply, in your own "
+                "The caller's last message is a question -- even if you answered the same thing earlier, a direct "
+                "question is NEVER skipped: a yes/no question gets its yes or no again, warmly. Answer it first, in this reply, in your own "
                 "words without repeating their question back "
                 f"(from the facts in your instructions, or with {fallback} if they aren't there), and only "
                 "then ask your next question.")})
