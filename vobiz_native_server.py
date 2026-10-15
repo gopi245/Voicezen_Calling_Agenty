@@ -2350,6 +2350,23 @@ def db_client_entry(found: dict) -> dict:
 FIXED_LANGUAGES = {"te-IN": "te", "en-IN": "en", "hi-IN": "hi"}
 
 
+_NOT_A_NAME = re.compile(
+    r"ఇది|అది|అవుతుంది|ఉంది|ఉందా|కాదు|సరే|ఓకే|కూల్|రేపు|రేపటి|చేస్తా|చెప్పండి|ఎంత|ఎన్ని|వద్దు|బై|హలో|"
+    r"కోర్సు|ఫీజు|క్లాస్|తెలుసు|అలాగే|మంచిది|okay|cool|fine|yes|no", re.I)
+
+
+def _looks_like_name(ans: str) -> bool:
+    """A plausible name reply: short, after the usual prefixes, and not an
+    everyday word -- "ఇది కూల్ అవుతుంది" was taken for a caller's name on a
+    real call (2026-10-15) and the real name was never collected."""
+    ans = re.sub(r"^(నా పేరు|పేరు|నేను|my name is|నా నేమ్|మై నేమ్ ఈజ్|మై నేమ్)\s*", "", ans.strip(), flags=re.I)
+    ans = re.sub(r"\s*(అండి|గారు)?[.।]?$", "", ans)
+    words = ans.split()
+    if not 1 <= len(words) <= 2:
+        return False
+    return not any(_NOT_A_NAME.search(w) for w in words)
+
+
 def _log_task_error(task: "asyncio.Task") -> None:
     """Done-callback for fire-and-forget speak tasks: a task that dies after
     being replaced (barge-in) otherwise logs an opaque "Task exception was
@@ -3385,8 +3402,7 @@ class CallSession:
             ans = (nxt["content"] or "").strip()
             if not ans or ans.endswith("?") or _DECLINE_RX.match(ans):
                 continue
-            if (asks_name and "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4
-                    and not re.search(r"పేరు|ఏంటి|ఎందుకు|మళ్ళీ", ans)):
+            if asks_name and "పేరు చెప్తార" in (m["content"] or "") and _looks_like_name(ans):
                 return True
             # The "answer" must actually look like a time: a caller echoing
             # "ట్రైనింగ్." was taken as the start date on a real call
@@ -3517,7 +3533,8 @@ class CallSession:
                 return [{"role": "system", "content": (
                     f"The caller said no to connecting AND asked a question in the same sentence: \"{last}\". "
                     "Do NOT transfer and do NOT say the transfer sentence. Start with a brief \"పర్లేదండి.\" "
-                    "then answer their question from the facts in your instructions in the same reply.")}]
+                    "then answer their question from the facts in your instructions in the same reply. Do NOT "
+                    "offer to connect them in this reply -- they just said no.")}]
             return [{"role": "system", "content": (
                 f"The caller just said \"{last}\" -- that is NO to connecting them to the team. Do NOT transfer and "
                 "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
@@ -3556,7 +3573,7 @@ class CallSession:
             ans = nxt["content"].strip()
             if ans.endswith("?") or _DECLINE_RX.match(ans):
                 continue
-            if "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4:
+            if "పేరు చెప్తార" in (m["content"] or "") and _looks_like_name(ans):
                 known.append(f"their name ({ans.rstrip('.')})")
             elif "ఎప్పటి నుంచి" in (m["content"] or ""):
                 known.append(f"when they can start ({ans.rstrip('.')})")
