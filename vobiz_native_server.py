@@ -250,6 +250,11 @@ try:
 except Exception:
     pass
 _AMB_GAIN = {"low": 1, "medium": 2, "high": 4}
+# Said instead of the transfer sentence when a transfer must not happen
+# (the caller already declined): the answer still lands somewhere real.
+_TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీకు కాల్ చేసి చెప్తారండి.",
+                   "English": "Our team will call you back with that detail.",
+                   "Hindi": "यह जानकारी हमारी टीम आपको कॉल करके बताएगी।"}
 # The connect-to-the-team sentences in every builder language (Telugu,
 # English, Hindi — the wording set by scriptBuilder.ts TRANSFER_LINES), so
 # the offer limit, the "no is not a transfer" check and the question-back
@@ -3342,6 +3347,28 @@ class CallSession:
                 n += 1
         return n >= limit
 
+    def _transfer_declined_standing(self) -> bool:
+        """True once the caller has said no to our connect offer and has not
+        since asked for the team themselves: no transfer for the rest of the
+        call. A real call (2026-10-15) was transferred seconds after
+        "వద్దండి" because an out-of-script question arrived next."""
+        if not (self.client or {}).get("transfer_to"):
+            return False
+        declined_at = None
+        for i, m in enumerate(self.messages):
+            if m["role"] != "user" or not _DECLINE_RX.match((m["content"] or "").strip()):
+                continue
+            prev = next((x["content"] for x in reversed(self.messages[:i]) if x["role"] == "assistant"), "") or ""
+            if _CONNECT_OFFER_RX.search(prev):
+                declined_at = i
+        if declined_at is None:
+            return False
+        for m in self.messages[declined_at + 1:]:
+            if m["role"] == "user" and re.search(
+                    r"కనెక్ట్|connect|మాట్లాడాలి|సార్|మేడం|staff|టీమ్|team|జాయిన్|join|అడ్మిషన్", m["content"] or "", re.I):
+                return False
+        return True
+
     def _offer_limit_reached(self) -> bool:
         """The connect offer has been made twice (clients with transfer_to).
         A real call (2026-10-12) offered it three replies in a row."""
@@ -3413,6 +3440,10 @@ class CallSession:
             notes.append({"role": "system", "content": (
                 "You offered to connect them, and they replied with a question instead of yes/no. That is NOT a "
                 "yes: answer their question, do NOT transfer and do NOT say the transfer sentence.")})
+        elif self._transfer_declined_standing():
+            notes.append({"role": "system", "content": (
+                "The caller said NO to being connected to the team earlier. Do NOT transfer and do NOT say the "
+                "transfer sentence for the rest of this call unless they themselves ask for the team or a person.")})
         topics = (self.client or {}).get("transfer_topics")
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         offers = sum(1 for m in self.messages
@@ -3457,15 +3488,22 @@ class CallSession:
         if topics and re.search(topics, last, re.I):
             # Topics the client's brief has no answer for: the model kept
             # inventing one ("హాస్టల్ లేదు", "గవర్నమెంట్ అప్రూవ్డ్") in testing.
+            if self._transfer_declined_standing():
+                return [{"role": "system", "content": (
+                    "The caller already said NO to being connected to the team. Do NOT transfer and do NOT say "
+                    "the transfer sentence. Answer only: \"ఆ వివరం మా టీమ్ మీకు కాల్ చేసి చెప్తారండి.\"")}]
             return [{"role": "system", "content": (
                 f"The caller asked: \"{last}\". Your instructions have NO answer for this. Reply with ONLY the "
                 "transfer sentence from your instructions, word for word, and nothing else.")}]
         if last.rstrip().endswith("?") or re.search(
                 r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|నా\?)", last):
+            fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
+                (self.client or {}).get("reply_language") or "Telugu", _TEAM_WILL_CALL["Telugu"]) + "\""
+                        if self._transfer_declined_standing() else "the transfer sentence")
             notes.append({"role": "system", "content": (
                 "The caller's last message is a question. Answer that question first, in this reply, in your own "
                 "words without repeating their question back "
-                "(from the facts in your instructions, or with the transfer sentence if they aren't there), and only "
+                f"(from the facts in your instructions, or with {fallback} if they aren't there), and only "
                 "then ask your next question.")})
         if not done:
             return notes
@@ -3584,6 +3622,13 @@ class CallSession:
                     if say and _CONNECT_GO_RX.search(say) and self._question_after_offer():
                         log.info("dropped a transfer sentence: they asked a question, not yes: %r", say)
                         continue
+                    if say and _CONNECT_GO_RX.search(say) and self._transfer_declined_standing():
+                        # Never speak "connecting you" when the transfer below
+                        # will rightly be blocked -- promise the callback
+                        # instead (a real call, 2026-10-15).
+                        say = _TEAM_WILL_CALL.get((self.client or {}).get("reply_language") or "Telugu",
+                                                  _TEAM_WILL_CALL["Telugu"])
+                        log.info("replaced a transfer sentence after an earlier no with the callback line")
                     if say:
                         spoken_any = True
                         said.append(say)
@@ -3634,6 +3679,9 @@ class CallSession:
         transfer = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
                     and (TRANSFER_MARKER in full or bool(phrase and phrase in spoken_full))
                     and not spoken_full.rstrip().endswith("?"))
+        if transfer and self._transfer_declined_standing():
+            log.warning("transfer skipped: the caller already said no to connecting")
+            transfer = False
         if transfer and self._question_after_offer():
             log.warning("transfer skipped: the caller asked a question, not yes (%r)", self._last_caller_words())
             transfer = False
