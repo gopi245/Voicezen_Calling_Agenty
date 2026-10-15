@@ -126,6 +126,11 @@ REANSWER_AFTER_S = float(os.getenv("REANSWER_AFTER_S", "2.5"))
 SILENCE_PROMPT_S = float(os.getenv("SILENCE_PROMPT_S", "6"))
 # VOICEZEN TEST -- longest the welcome waits for the dashboard agent-config.
 AGENT_CONFIG_WAIT_VOICEZEN_S = float(os.getenv("AGENT_CONFIG_WAIT_VOICEZEN_S", "1.0"))
+# The caller's phone swallows the first ~half second after pickup, which ate
+# the greeting's opening words on a real call (2026-10-15, "SR" never heard).
+# Newer-engine calls wait this long before the greeting starts -- with
+# background noise on, the caller hears the room, not silence.
+GREETING_LEAD_IN_S = float(os.getenv("GREETING_LEAD_IN_S", "0.5"))
 SILENCE_LINES = {  # (can you hear me?, closing)
     "hi": ("जी, क्या आप मुझे सुन पा रहे हैं?",
            "माफ़ कीजिए जी, आपकी आवाज़ नहीं आ रही है। कृपया थोड़ी देर बाद दोबारा कॉल करें, धन्यवाद।"),
@@ -2817,7 +2822,13 @@ class CallSession:
         # assistant turn at all and it re-opened with the greeting instead of
         # answering, because as far as its history showed it hadn't spoken yet.
         self.messages.append({"role": "assistant", "content": greeting})
-        self._speak_task = asyncio.create_task(self._speak(greeting))
+        if self._legacy_engine:
+            self._speak_task = asyncio.create_task(self._speak(greeting))
+        else:
+            async def _greet_after_lead_in(text=greeting):
+                await asyncio.sleep(GREETING_LEAD_IN_S)
+                await self._speak(text)
+            self._speak_task = asyncio.create_task(_greet_after_lead_in())
         if not self._legacy_engine:
             # VOICEZEN TEST -- greeting first, then connect speech-to-text
             # while it plays: nobody answers a greeting they haven't heard.

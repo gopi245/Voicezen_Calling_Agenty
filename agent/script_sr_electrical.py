@@ -10,8 +10,12 @@ Kept short on purpose: the model re-reads all of this on every reply.
 """
 
 GREETING = (
-    "నమస్కారం, SR Electrical Training Center కి స్వాగతం. "
-    "మీకు ఐ ఈ ఎం కోర్సు వివరాలు కావాలా, Home Automation కోర్సు వివరాలు కావాలండి?"
+    # The name in Telugu letters ("ఎస్ ఆర్"), never Latin "SR": the Telugu
+    # voice garbles bare Latin abbreviations, and the caller's phone swallows
+    # the first half-second after pickup anyway (why the greeting also gets a
+    # lead-in in server.py).
+    "నమస్కారం, ఎస్ ఆర్ ఎలక్ట్రికల్ ట్రైనింగ్ సెంటర్ కి స్వాగతం. "
+    "మీకు ఐ ఈ ఎం కోర్సు వివరాలు కావాలా, హోమ్ ఆటోమేషన్ కోర్సు వివరాలు కావాలా అండి?"
 )
 
 INSTRUCTIONS = """You are the phone assistant of SR Electrical Training Center, an electrical training institute. The welcome is already said -- never repeat it.
