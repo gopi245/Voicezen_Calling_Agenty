@@ -3331,6 +3331,31 @@ class CallSession:
         return bool(last.endswith("?") or re.search(
             r"ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|ఏమిటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా", last))
 
+    def _known_reask(self, sentence: str) -> bool:
+        """The sentence asks for something the caller already gave (name or
+        start date) -- the model re-asked the name after a course switch on a
+        real call (2026-10-15) despite being told it knows it."""
+        if not (self.client or {}).get("repeat_guard"):
+            return False
+        asks_name = "పేరు చెప్తార" in sentence or "పేరు ఏంట" in sentence
+        asks_start = "ఎప్పటి నుంచి" in sentence and "స్టార్ట్" in sentence
+        if not (asks_name or asks_start):
+            return False
+        for i, m in enumerate(self.messages[:-1]):
+            if m["role"] != "assistant":
+                continue
+            nxt = self.messages[i + 1]
+            if nxt["role"] != "user":
+                continue
+            ans = (nxt["content"] or "").strip()
+            if not ans or ans.endswith("?") or _DECLINE_RX.match(ans):
+                continue
+            if asks_name and "పేరు చెప్తార" in (m["content"] or "") and len(ans.split()) <= 4:
+                return True
+            if asks_start and "ఎప్పటి నుంచి" in (m["content"] or ""):
+                return True
+        return False
+
     def _asked_too_often(self, question: str) -> bool:
         """This question was already asked twice in the call (clients with
         repeat_guard); the qualification may be asked up to four times."""
@@ -3363,10 +3388,20 @@ class CallSession:
                 declined_at = i
         if declined_at is None:
             return False
-        for m in self.messages[declined_at + 1:]:
+        after = self.messages[declined_at + 1:]
+        for i, m in enumerate(after):
             if m["role"] == "user" and re.search(
                     r"కనెక్ట్|connect|మాట్లాడాలి|సార్|మేడం|staff|టీమ్|team|జాయిన్|join|అడ్మిషన్", m["content"] or "", re.I):
                 return False
+            # A yes right after a FRESH offer also lifts the earlier no: a
+            # real caller (2026-10-15) said no to one course, warmed up to
+            # the other, said "హా" to the new offer -- and was blocked.
+            if (m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
+                    and i + 1 < len(after) and after[i + 1]["role"] == "user"):
+                ans = (after[i + 1]["content"] or "").strip()
+                if not _DECLINE_RX.match(ans) and re.match(
+                        r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|हाँ|जी|ठीक)", ans, re.I):
+                    return False
         return True
 
     def _offer_limit_reached(self) -> bool:
@@ -3645,6 +3680,9 @@ class CallSession:
                     say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
                         say = self._speech_fixes(_speak_phone_digits(say))
+                    if say and say.endswith("?") and self._known_reask(say):
+                        log.info("dropped a question whose answer is already known: %r", say)
+                        continue
                     if say and say.endswith("?") and self._asked_too_often(say):
                         # A real call (2026-10-12) tacked "మీ పేరు చెప్తారండి?"
                         # onto four answers in a row.
