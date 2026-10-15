@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import audioop
 import functools
 import base64
 import importlib
@@ -229,6 +230,21 @@ _RECENT_LEAD_CALLS: dict[str, float] = {}
 # dashboard's bot settings), so /transfer-xml can tell a real target from an
 # invented one without those clients being in clients_registry.py.
 _DB_TRANSFER_TARGETS: set[str] = set()
+
+# ADMIN -- a faint office behind the whole call, for clients with
+# clients_registry/bot "background_noise" ("low", "medium", "high"). One
+# pre-baked seamless loop (already at the "low" level the owner chose on
+# 2026-10-15), mixed into the bot's voice frames while it speaks and paced
+# out alone while it thinks or the caller talks, so the line never goes
+# fully dead. Missing file = the feature is simply off.
+_AMBIENCE: bytes = b""
+try:
+    with wave.open(str(HERE / "ambience_office_low.wav")) as _aw:
+        if _aw.getframerate() == 24000 and _aw.getnchannels() == 1 and _aw.getsampwidth() == 2:  # == TTS_SAMPLE_RATE (defined below)
+            _AMBIENCE = _aw.readframes(_aw.getnframes())
+except Exception:
+    pass
+_AMB_GAIN = {"low": 1, "medium": 2, "high": 4}
 # The connect-to-the-team sentences in every builder language (Telugu,
 # English, Hindi — the wording set by scriptBuilder.ts TRANSFER_LINES), so
 # the offer limit, the "no is not a transfer" check and the question-back
@@ -2394,6 +2410,9 @@ class CallSession:
         self._transfer_requested = False
         self._voicezen_lead_client = None
         self._ending = False
+        self._amb_pos = 0
+        self._amb_mul = 0
+        self._amb_task = None
         self._screener_answered = False
         # VOICEZEN TEST -- the reply to the caller's latest words, so a newer
         # turn can replace it (see _supersede_open_turn), plus an estimate of
@@ -2462,6 +2481,8 @@ class CallSession:
                 client[flag] = bot[flag]
         if isinstance(bot.get("speech_fixes"), dict):
             client["speech_fixes"] = {str(k): str(v) for k, v in bot["speech_fixes"].items() if str(k)}
+        if bot.get("background_noise") in _AMB_GAIN:
+            client["background_noise"] = bot["background_noise"]
         for key in ("stt_prompt", "goodbye_phrase", "transfer_phrase"):
             if isinstance(bot.get(key), str) and bot[key].strip():
                 client[key] = bot[key].strip()
@@ -2752,6 +2773,12 @@ class CallSession:
             log.error("no script for client '%s' -- using the fallback script", self.client["client_id"])
             _, greeting, instructions = load_client_script(None)
 
+        noise = (self.client or {}).get("background_noise")
+        if noise in _AMB_GAIN and _AMBIENCE and not self._legacy_engine:
+            self._amb_mul = _AMB_GAIN[noise]
+            self._amb_task = asyncio.create_task(self._ambience_loop())
+            log.info("background noise on (%s)", noise)
+
         instructions = _instructions_no_livekit(instructions)
         # VOICEZEN TEST -- VoiceZen's own rules (always Telugu, one question
         # per reply, pricing, mishearing, endings) live in script_voicezen.py,
@@ -2875,6 +2902,39 @@ class CallSession:
         self.playing = False
         self._awaiting_checkpoint = None
         self._line_free_at = time.time()
+
+    def _amb_next(self, nbytes: int) -> bytes:
+        """The next slice of the ambience loop, scaled for this client."""
+        out = b""
+        pos = self._amb_pos
+        while len(out) < nbytes:
+            take = min(nbytes - len(out), len(_AMBIENCE) - pos)
+            out += _AMBIENCE[pos:pos + take]
+            pos = (pos + take) % len(_AMBIENCE)
+        self._amb_pos = pos
+        return audioop.mul(out, 2, self._amb_mul) if self._amb_mul > 1 else out
+
+    async def _ambience_loop(self):
+        """Sends the office bed whenever no reply is playing -- the thinking
+        gaps and the caller's own turns. Paced in real time (one 40 ms frame
+        every 40 ms) so Vobiz never buffers a backlog that would delay the
+        next reply behind queued ambience."""
+        FRAME = 1920  # 40 ms of 24 kHz mono PCM16
+        try:
+            while not self._done.is_set():
+                if self.playing or self.speaking or not self.stream_id:
+                    await asyncio.sleep(0.06)
+                    continue
+                piece = self._amb_next(FRAME)
+                await self._send({"event": "playAudio", "streamId": self.stream_id,
+                                  "media": {"contentType": "audio/x-l16",
+                                            "sampleRate": TTS_SAMPLE_RATE,
+                                            "payload": base64.b64encode(piece).decode()}})
+                await asyncio.sleep(0.04)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("ambience loop died -- the call carries on without it")
 
     def _on_played(self, name: str | None):
         """Vobiz confirms the caller has now heard everything up to a
@@ -3602,12 +3662,17 @@ class CallSession:
                             self._playback_started_at = time.time()
                         self.playing = True
                         self._note_line_audio(len(chunk[i:i + frame]), turn)
+                        piece = chunk[i:i + frame]
+                        if self._amb_mul and len(piece) % 2 == 0:
+                            # The same bed under the voice, so the room never
+                            # disappears when the bot starts talking.
+                            piece = audioop.add(piece, self._amb_next(len(piece)), 2)
                         await self._send({
                             "event": "playAudio",
                             "streamId": self.stream_id,
                             "media": {"contentType": "audio/x-l16",
                                      "sampleRate": TTS_SAMPLE_RATE,
-                                     "payload": base64.b64encode(chunk[i:i + frame]).decode()},
+                                     "payload": base64.b64encode(piece).decode()},
                         })
             self._awaiting_checkpoint = name
             await self._send({"event": "checkpoint", "streamId": self.stream_id,
@@ -3784,6 +3849,8 @@ class CallSession:
             self._debounce_task.cancel()
         if self._time_limit_task:
             self._time_limit_task.cancel()
+        if self._amb_task:
+            self._amb_task.cancel()
         await self.stt.close()
         await self.http.close()
         await self._report()
