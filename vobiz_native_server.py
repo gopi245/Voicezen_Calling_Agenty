@@ -260,6 +260,11 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 _ASSENT_RX = re.compile(r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|कनेक्ट|हाँ|जी|ठीक)", re.I)
 _PERSON_RX = re.compile(r"కనెక్ట్|connect|మాట్లాడ|సార్|మేడం|staff|టీమ్|team|अडमिशन|అడ్మిషన్ టీమ్", re.I)
 # The ask, phrased so _CONNECT_OFFER_RX recognises it as an offer.
+# For a question the script has no answer to: just say so (owner's rule,
+# 2026-10-15) -- no transfer offer, no invented answer.
+_NO_INFO = {"Telugu": "సారీ అండి, ఆ సమాచారం మా దగ్గర లేదండి.",
+            "English": "Sorry, I don't have that information.",
+            "Hindi": "माफ़ कीजिए, यह जानकारी मेरे पास नहीं है।"}
 _CONNECT_ASK = {"Telugu": "ఆ వివరం మా టీమ్ చెప్పగలరండి. కనెక్ట్ చేయమంటారా?",
                 "English": "Our team can answer that. Shall I connect you to our team?",
                 "Hindi": "यह जानकारी हमारी टीम बता सकती है। क्या मैं आपको हमारी टीम से कनेक्ट कर दूँ?"}
@@ -3619,14 +3624,11 @@ class CallSession:
         if topics and re.search(topics, last, re.I):
             # Topics the client's brief has no answer for: the model kept
             # inventing one ("హాస్టల్ లేదు", "గవర్నమెంట్ అప్రూవ్డ్") in testing.
-            if self._transfer_declined_standing():
-                return [{"role": "system", "content": (
-                    "The caller already said NO to being connected to the team. Do NOT transfer and do NOT say "
-                    "the transfer sentence. Answer only: \"ఆ వివరం మా టీమ్ మీకు కాల్ చేసి చెప్తారండి.\"")}]
-            ask = _CONNECT_ASK.get((self.client or {}).get("reply_language") or "Telugu", _CONNECT_ASK["Telugu"])
+            noinfo = _NO_INFO.get((self.client or {}).get("reply_language") or "Telugu", _NO_INFO["Telugu"])
             return [{"role": "system", "content": (
-                f"The caller asked: \"{last}\". Your instructions have NO answer for this. Do NOT invent one and "
-                f"do NOT transfer yet -- reply ONLY: \"{ask}\" and transfer only if they then say yes.")}]
+                f"The caller asked: \"{last}\". Your instructions have NO answer for this. Do NOT invent one, do "
+                f"NOT transfer and do NOT offer to connect -- reply ONLY: \"{noinfo}\" They can still be connected "
+                "later if they themselves ask for the team.")}]
         if last.rstrip().endswith("?") or re.search(
                 r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|నా\?)", last):
             fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
@@ -3763,9 +3765,15 @@ class CallSession:
                         # The model jumped to "connecting you" without a yes:
                         # offer instead (or promise the callback once the
                         # offer has been made twice).
-                        say = (_TEAM_WILL_CALL if self._offer_limit_reached() else _CONNECT_ASK).get(
-                            (self.client or {}).get("reply_language") or "Telugu", _CONNECT_ASK["Telugu"])
-                        log.info("replaced an unconsented transfer sentence with the offer")
+                        lang = (self.client or {}).get("reply_language") or "Telugu"
+                        topics = (self.client or {}).get("transfer_topics")
+                        lastc = (self._last_caller_words() or "")
+                        if topics and re.search(topics, lastc, re.I):
+                            say = _NO_INFO.get(lang, _NO_INFO["Telugu"])
+                        else:
+                            say = (_TEAM_WILL_CALL if self._offer_limit_reached() else _CONNECT_ASK).get(
+                                lang, _CONNECT_ASK["Telugu"])
+                        log.info("replaced an unconsented transfer sentence with %r", say)
                     if say and _CONNECT_GO_RX.search(say) and self._transfer_declined_standing():
                         # Never speak "connecting you" when the transfer below
                         # will rightly be blocked -- promise the callback
