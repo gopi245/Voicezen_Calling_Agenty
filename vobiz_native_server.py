@@ -2754,6 +2754,11 @@ class CallSession:
             self._tts_language = self.client.get("tts_language") or self._tts_language
             self._follow_caller_language = bool(self.client.get("multilingual"))
             self._tts_provider = self.client.get("tts_provider")
+            # Per-number speaking rate (clients_registry "tts_speed"): the
+            # Hindi real-estate line sounded a touch fast at 1.0. A speed
+            # chosen on the dashboard's AI page still overrides this.
+            if self.client.get("tts_speed") in SELECTABLE_SPEEDS:
+                self._tts_speed = self.client["tts_speed"]
             caller_no = _to_e164(self._from_number)
             if (self.client.get("client_id") == "voicezen" and self._direction != "outbound" and caller_no
                     and time.time() - _RECENT_LEAD_CALLS.get(caller_no, 0) < RECENT_LEAD_WINDOW_S):
