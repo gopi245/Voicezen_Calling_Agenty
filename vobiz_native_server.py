@@ -3539,7 +3539,12 @@ class CallSession:
         offer_live = bool(_CONNECT_OFFER_RX.search(prevs[0])) or bool(
             len(prevs) > 1 and _CONNECT_OFFER_RX.search(prevs[1])
             and not prevs[0].rstrip().endswith("?"))
-        return bool(offer_live and not _DECLINE_RX.match(last) and _ASSENT_RX.match(last))
+        # A filler ఆ/హా before a yes-word still consents: "ఆ చేయండి." was
+        # rejected on a real call (2026-10-17) because the lone-ఆ rule only
+        # looked at the first word.
+        stripped = re.sub(r"^\W*(ఆఁ|ఆ|హా)[\s.,!]+", "", last)
+        return bool(offer_live and not _DECLINE_RX.match(last)
+                    and (_ASSENT_RX.match(last) or _ASSENT_RX.match(stripped)))
 
     def _transfer_declined_standing(self) -> bool:
         """True once the caller has said no to our connect offer and has not
@@ -3921,6 +3926,7 @@ class CallSession:
                   and not self._transfer_declined_standing() and not self._question_after_offer())
         dropped_offer_after_decline = False
         dropped_goodbye = False
+        swapped_go = False
         gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
@@ -4009,6 +4015,7 @@ class CallSession:
                             say = (_TEAM_WILL_CALL if self._offer_limit_reached() else _CONNECT_ASK).get(
                                 lang, _CONNECT_ASK["Telugu"])
                         log.info("replaced an unconsented transfer sentence with %r", say)
+                        swapped_go = True
                     if say and _CONNECT_GO_RX.search(say) and self._transfer_declined_standing():
                         # Never speak "connecting you" when the transfer below
                         # will rightly be blocked -- promise the callback
@@ -4016,6 +4023,14 @@ class CallSession:
                         say = _TEAM_WILL_CALL.get((self.client or {}).get("reply_language") or "Telugu",
                                                   _TEAM_WILL_CALL["Telugu"])
                         log.info("replaced a transfer sentence after an earlier no with the callback line")
+                        swapped_go = True
+                    if say and swapped_go and re.search(r"ఒక్క నిమిషం|లైన్‌లో ఉండండి|లైన్లో ఉండండి|hold the line|stay on the line", say):
+                        # The transfer sentence was swapped away, so its
+                        # companion must go too: a real caller (2026-10-17)
+                        # heard "ఒక్క నిమిషం లైన్‌లో ఉండండి" twice and waited
+                        # on a line nothing was coming to.
+                        log.info("dropped the hold-the-line sentence after a swapped transfer: %r", say)
+                        continue
                     if say:
                         spoken_any = True
                         said.append(say)
@@ -4119,7 +4134,8 @@ class CallSession:
         # a "still live" note so it never says the call has ended.
         self._ending_suppressed = (not self._legacy_engine and not end_call and not transfer
                                    and (dropped_goodbye or END_MARKER in full))
-        log.info("bot: %s%s", spoken_full, "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
+        log.info("bot: %s%s", spoken_text if (not self._legacy_engine and spoken_text) else spoken_full,
+                 "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up (or transfers)
         # after it if the reply asked for that.
         if end_call and not transfer and not self._legacy_engine:
