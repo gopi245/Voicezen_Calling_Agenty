@@ -257,7 +257,10 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
                    "Hindi": "यह जानकारी हमारी टीम आपको कॉल करके बताएगी।"}
 # A clear yes to the connect offer -- the ONLY thing that triggers a transfer
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
-_ASSENT_RX = re.compile(r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|कनेक्ट|हाँ|जी|ठीक)", re.I)
+# గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
+# offer "గుడ్ అండి" and was hung up on instead of transferred.
+_ASSENT_RX = re.compile(r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
+                        r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 _PERSON_RX = re.compile(r"కనెక్ట్|connect|మాట్లాడ|సార్|మేడం|staff|టీమ్|team|अडमिशन|అడ్మిషన్ టీమ్", re.I)
 # The ask, phrased so _CONNECT_OFFER_RX recognises it as an offer.
 # For a question the script has no answer to: just say so (owner's rule,
@@ -273,6 +276,10 @@ _CONNECT_ASK = {"Telugu": "ఆ వివరం మా టీమ్ చెప్�
 # the offer limit, the "no is not a transfer" check and the question-back
 # check work for English and Hindi bots exactly as they do for Telugu.
 _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|కి connect చేయమంటార|connect you to our team|टीम से कनेक्ट कर")
+# "Anything else?" endings in every phrasing the model keeps inventing --
+# banned in the scripts, enforced here: a real call (2026-10-17) ended three
+# answers with "ఇంకా ఏదైనా తెలుసుకోవాలా?" despite the written ban.
+_ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|और कुछ|कुछ और", re.I)
 _CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్నాను|కి connect చేస్తున్నాను|connecting you to our team|टीम से कनेक्ट कर रही")
 _DECLINE_RX = re.compile(
     r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
@@ -3498,8 +3505,7 @@ class CallSession:
             if (m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
                     and i + 1 < len(after) and after[i + 1]["role"] == "user"):
                 ans = (after[i + 1]["content"] or "").strip()
-                if not _DECLINE_RX.match(ans) and re.match(
-                        r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|हाँ|जी|ठीक)", ans, re.I):
+                if not _DECLINE_RX.match(ans) and _ASSENT_RX.match(ans):
                     return False
         return True
 
@@ -3617,12 +3623,16 @@ class CallSession:
             notes.append({"role": "system", "content": (
                 "The caller said NO to being connected to the team earlier. Do NOT transfer and do NOT say the "
                 "transfer sentence for the rest of this call unless they themselves ask for the team or a person.")})
-        if ((self.client or {}).get("transfer_to") and _PERSON_RX.search(last)
-                and not _DECLINE_RX.match(last) and not self._transfer_declined_standing()):
-            # Asking for a person IS the yes -- transfer straight away.
+        if ((self.client or {}).get("transfer_to")
+                and (_PERSON_RX.search(last) or self._transfer_consented())
+                and not _DECLINE_RX.match(last) and not self._transfer_declined_standing()
+                and not self._question_after_offer()):
+            # Asking for a person IS the yes -- and so is any yes to our
+            # connect offer ("గుడ్ అండి"): a real call (2026-10-17) answered
+            # that yes with a goodbye and hung up on an interested student.
             return [{"role": "system", "content": (
-                "The caller themselves asked to talk to a person / the team. Reply with ONLY the transfer "
-                "sentence from your instructions, word for word, and nothing else.")}]
+                "The caller agreed to talk to a person / the team. Reply with ONLY the transfer "
+                "sentence from your instructions, word for word, and nothing else -- never a goodbye.")}]
         topics = (self.client or {}).get("transfer_topics")
         prev = next((m["content"] for m in reversed(self.messages) if m["role"] == "assistant"), "") or ""
         offers = sum(1 for m in self.messages
@@ -3769,6 +3779,14 @@ class CallSession:
         # keeps only what the caller actually heard.
         said: list[str] = []
         asked = False
+        # A yes to our connect offer means this reply IS the transfer: if the
+        # model writes anything else (a real call, 2026-10-17, wrote a goodbye
+        # and hung up on an interested student), the whole reply is replaced
+        # with the transfer sentence.
+        go_phrase = (self.client or {}).get("transfer_phrase")
+        go_now = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
+                  and bool(go_phrase) and self._transfer_consented()
+                  and not self._transfer_declined_standing() and not self._question_after_offer())
         gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
@@ -3790,6 +3808,19 @@ class CallSession:
                     say = _strip_markers(sentence).strip()
                     if say and not self._legacy_engine:
                         say = self._speech_fixes(_speak_phone_digits(say))
+                    if say and go_now and go_phrase in say:
+                        go_now = False  # the model wrote the transfer sentence itself
+                    if say and go_now and go_phrase not in say:
+                        say = f"సరేనండి, మా {go_phrase}. ఒక్క నిమిషం లైన్‌లో ఉండండి."
+                        log.info("caller said yes to connecting -- replaced the reply with the transfer sentence")
+                        spoken_any = True
+                        said.append(say)
+                        await queue.put(say)
+                        asked = True  # stop reading the stream; nothing else is spoken
+                        break
+                    if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
+                        log.info("dropped an 'anything else?' question: %r", say)
+                        continue
                     if say and say.endswith("?") and self._known_reask(say):
                         log.info("dropped a question whose answer is already known: %r", say)
                         continue
