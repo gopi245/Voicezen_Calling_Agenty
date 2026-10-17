@@ -132,9 +132,10 @@ CLIENTS: dict[str, dict] = {
         ),
         # Tell the model which questions it has already asked twice.
         "repeat_guard": True,
-        # The admission team's live-transfer number (restored 2026-10-15
-        # after testing on the owner's phone).
-        "transfer_to": "+919154681593",
+        # Live-transfer target: the owner's own phone for now (their ask,
+        # 2026-10-17). The admission team's number is +919154681593 --
+        # restore it when the owner says so.
+        "transfer_to": "+919704123933",
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
