@@ -4449,8 +4449,11 @@ class CallSession:
                             "exactly these keys:\n"
                             '  "student_name": the caller\'s name if stated, else null\n'
                             '  "qualification": one of "B.Tech EEE", "Diploma EEE", "ITI Electrician", '
-                            '"Other", or null if not said\n'
-                            '  "course": "I.E.M", "Home Automation", "Both", or null\n'
+                            '"Other", or null if not said -- for "Other", append what they studied in '
+                            'brackets, e.g. "Other (10th class)"\n'
+                            '  "course": "Job Placement Program", "Only Practicals", or null\n'
+                            '  "training_mode": "Online", "Offline", or null if not said\n'
+                            '  "batch": the batch or timing they preferred, in English, else null\n'
                             '  "start_when": when they said they can start the training, in English, else null\n'
                             '  "call_result": one short English sentence on how the call ended\n'
                             '  "lead_status": one of "Interested", "Follow-up", "Not interested"\n'
@@ -4468,12 +4471,32 @@ class CallSession:
                         "student_name": caller_name,
                         "qualification": parsed.get("qualification"),
                         "course": parsed.get("course"),
+                        "training_mode": parsed.get("training_mode"),
+                        "batch": parsed.get("batch"),
                         "start_when": parsed.get("start_when"),
                     },
                     "call_result": parsed.get("call_result"),
                     "lead_status": parsed.get("lead_status"),
                     "transferred_to_team": self._transfer_requested,
                 }
+                # The caller said YES to the team: their details go straight
+                # to the team member on WhatsApp (owner's ask, 2026-10-17),
+                # whichever way the live transfer itself went.
+                alert_to = (self.client or {}).get("lead_alert_whatsapp")
+                if alert_to and self._transfer_requested:
+                    phone = self._to_number if self._direction == "outbound" else self._from_number
+                    lines = ["SR Electrical - new lead (said YES to team connect)"]
+                    for label, val in [("Name", caller_name),
+                                       ("Qualification", parsed.get("qualification")),
+                                       ("Course", parsed.get("course")),
+                                       ("Mode", parsed.get("training_mode")),
+                                       ("Batch", parsed.get("batch")),
+                                       ("Can start", parsed.get("start_when")),
+                                       ("Phone", phone),
+                                       ("Summary", summary)]:
+                        if val:
+                            lines.append(f"{label}: {val}")
+                    await asyncio.to_thread(voicezen.send_lead_alert, alert_to, "\n".join(lines))
             except Exception:
                 log.exception("call summary/extraction failed -- reporting without one")
         elif transcript.strip():

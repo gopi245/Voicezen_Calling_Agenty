@@ -158,6 +158,11 @@ CLIENTS: dict[str, dict] = {
         # 2026-10-17). The admission team's number is +919154681593 --
         # restore it when the owner says so.
         "transfer_to": "+919704123933",
+        # When a caller says yes to the team connect, their details go to
+        # this WhatsApp number via the lead-alert edge function (owner's
+        # ask, 2026-10-17) -- WaSender internal channel, not a customer
+        # WhatsApp number.
+        "lead_alert_whatsapp": "+919493918625",
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",

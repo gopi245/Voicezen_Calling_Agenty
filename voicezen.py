@@ -167,6 +167,36 @@ async def report_call_async(**kwargs: Any) -> None:
     await asyncio.to_thread(report_call, **kwargs)
 
 
+def send_lead_alert(to: str, text: str) -> bool:
+    """WhatsApp a lead's details to a team member, via the lead-alert edge
+    function (which relays over WaSender -- the internal-alert channel, never
+    a customer-facing WhatsApp number). Best-effort: a failed alert is logged
+    and lost, never queued -- the same lead is already in the call log.
+    Same auth as log-call: VOICEZEN_AGENT_SECRET in x-agent-secret."""
+    base = os.getenv("VOICEZEN_URL", "").rstrip("/")
+    secret = os.getenv("VOICEZEN_AGENT_SECRET", "")
+    anon = os.getenv("VOICEZEN_ANON_KEY", "")
+    if not base or not secret:
+        logger.warning("lead alert not configured -- skipped")
+        return False
+    try:
+        r = httpx.post(
+            f"{base}/functions/v1/lead-alert",
+            headers={"x-agent-secret": secret, "Content-Type": "application/json",
+                     "apikey": anon, "Authorization": f"Bearer {anon}"},
+            json={"to": to, "text": text},
+            timeout=20.0,
+        )
+    except Exception as e:  # noqa: BLE001 -- best-effort by design
+        logger.warning("lead alert failed: %s", type(e).__name__)
+        return False
+    if r.status_code != 200:
+        logger.warning("lead alert failed: HTTP %s %s", r.status_code, r.text[:120])
+        return False
+    logger.info("lead alert sent to %s", to)
+    return True
+
+
 def _send(payload: dict[str, Any]) -> None:
     result = _post(payload)
     if result:
