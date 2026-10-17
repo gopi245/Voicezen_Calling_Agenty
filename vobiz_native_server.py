@@ -261,7 +261,11 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
 _ASSENT_RX = re.compile(r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
-_PERSON_RX = re.compile(r"కనెక్ట్|connect|మాట్లాడ|సార్|మేడం|staff|టీమ్|team|अडमिशन|అడ్మిషన్ టీమ్", re.I)
+# Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
+# సార్ addressed at the bot) was transferred as a person-request (sim,
+# 2026-10-17). Asking FOR a person still matches via తో/ని/కావాలి or మాట్లాడ.
+_PERSON_RX = re.compile(r"కనెక్ట్|connect|మాట్లాడ|సార్ ?(తో|ని|కావాలి)|మేడం ?(తో|ని|కావాలి)|"
+                        r"staff|టీమ్|team|अडमिशन|అడ్మిషన్ టీమ్", re.I)
 # The ask, phrased so _CONNECT_OFFER_RX recognises it as an offer.
 # For a question the script has no answer to: just say so (owner's rule,
 # 2026-10-15) -- no transfer offer, no invented answer.
