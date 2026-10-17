@@ -280,6 +280,16 @@ _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|
 # banned in the scripts, enforced here: a real call (2026-10-17) ended three
 # answers with "ఇంకా ఏదైనా తెలుసుకోవాలా?" despite the written ban.
 _ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|और कुछ|कुछ और", re.I)
+# Words that read as a date or day: a caller answering our connect offer with
+# "October 20th ని" is answering the EARLIER joining-date question, not the
+# offer (a real call, 2026-10-17, met that date with a transfer attempt).
+_DATEISH_RX = re.compile(
+    r"అక్టోబర్|నవంబర్|డిసెంబర్|జనవరి|ఫిబ్రవరి|మార్చి|ఏప్రిల్|జూన్|జూలై|ఆగస్టు|సెప్టెంబర్|"
+    r"october|november|december|january|february|march|april|\bmay\b|june|july|august|september|"
+    r"సోమవారం|మంగళవారం|బుధవారం|గురువారం|శుక్రవారం|శనివారం|ఆదివారం|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"రేపు|ఎల్లుండి|వచ్చే వారం|వచ్చే నెల|తేదీ|తారీఖు|tomorrow|next week|next month|"
+    r"[0-9]{1,2}\s*(st|nd|rd|th)?\b", re.I)
 _CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్నాను|కి connect చేస్తున్నాను|connecting you to our team|टीम से कनेक्ट कर रही")
 _DECLINE_RX = re.compile(
     r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
@@ -3637,6 +3647,18 @@ class CallSession:
             notes.append({"role": "system", "content": (
                 "The caller said NO to being connected to the team earlier. Do NOT transfer and do NOT say the "
                 "transfer sentence for the rest of this call unless they themselves ask for the team or a person.")})
+        prev_q = next((m["content"] for m in reversed(self.messages[:-1])
+                       if m["role"] == "assistant"), "") or ""
+        if ((self.client or {}).get("transfer_to") and _CONNECT_OFFER_RX.search(prev_q)
+                and not _ASSENT_RX.match(last) and not _DECLINE_RX.match(last)
+                and not last.rstrip().endswith("?") and _DATEISH_RX.search(last)):
+            # A date after the connect offer answers the earlier joining-date
+            # question, not the offer.
+            return [{"role": "system", "content": (
+                f"The caller's words (\"{last}\") give a DATE or day -- they are answering your earlier question "
+                "about when they can join, NOT the connect offer. Do NOT transfer and do NOT say the transfer "
+                "sentence. Acknowledge it briefly (\"సరేనండి.\") with the date noted, then ask once more: "
+                "\"మా అడ్మిషన్ టీమ్‌కి కనెక్ట్ చేయమంటారండి?\"")}]
         if ((self.client or {}).get("transfer_to")
                 and (_PERSON_RX.search(last) or self._transfer_consented())
                 and not _DECLINE_RX.match(last) and not self._transfer_declined_standing()
@@ -3835,6 +3857,15 @@ class CallSession:
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
                         continue
+                    bye_cfg = (self.client or {}).get("goodbye_phrase")
+                    if (say and not self._legacy_engine and bye_cfg
+                            and (bye_cfg in say or re.search(r"(^|\s)బై[!.\s]*$", say))
+                            and not _caller_said_goodbye(self._last_caller_words())):
+                        # The model closed the call on a lone "ఉమ్." (a real
+                        # call, 2026-10-17): a goodbye is only spoken when the
+                        # caller said bye / thanks / not interested.
+                        log.info("dropped a goodbye sentence -- the caller didn't say goodbye: %r", say)
+                        continue
                     if say and say.endswith("?") and self._known_reask(say):
                         log.info("dropped a question whose answer is already known: %r", say)
                         continue
@@ -3920,9 +3951,13 @@ class CallSession:
         spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
         bye = (self.client or {}).get("goodbye_phrase")
-        if not end_call and bye and bye in spoken_full and not spoken_full.rstrip().endswith("?"):
+        if (not end_call and bye and bye in spoken_full and not spoken_full.rstrip().endswith("?")
+                and (self._legacy_engine or _caller_said_goodbye(self._last_caller_words()))):
             # The script's goodbye line only ever closes a call: a real call
-            # (2026-10-12) said it, didn't hang up, and said it again.
+            # (2026-10-12) said it, didn't hang up, and said it again. But
+            # only when the CALLER said goodbye -- this rule once hung up on
+            # a lone "ఉమ్." that the END-marker guard had rightly ignored
+            # (2026-10-17).
             end_call = True
         # The marker, or the script's fixed transfer sentence: in testing the
         # model said "connecting you now" but often left the marker off.
