@@ -259,7 +259,7 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
 # గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
-_ASSENT_RX = re.compile(r"^\W*(హా|ఆఁ|ఆ(?=[\s.,!?]|$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
+_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా|ఆఁ|ఆ(?=[\s.,!?]|$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 # Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
 # సార్ addressed at the bot) was transferred as a person-request (sim,
@@ -3471,14 +3471,17 @@ class CallSession:
         repeat_guard); the qualification may be asked up to four times."""
         if not (self.client or {}).get("repeat_guard"):
             return False
-        key = re.sub(r"[\s?.!,।]+", " ", question).strip()
+        # Zero-width joiners deleted outright: "టీమ్‌కి" with and without
+        # ‌ read as two different questions on a real call (2026-10-17),
+        # so the limit never tripped and the offer was spoken four times.
+        key = re.sub(r"[\s?.!,।]+", " ", re.sub(r"[‌‍]", "", question)).strip()
         limit = 4 if "చదివార" in key else 2
         n = 0
         for m in self.messages:
             if m["role"] != "assistant":
                 continue
             q = re.split(r"(?<=[.!।])\s+", _strip_markers(m["content"] or "").strip())[-1]
-            if q.endswith("?") and re.sub(r"[\s?.!,।]+", " ", q).strip() == key:
+            if q.endswith("?") and re.sub(r"[\s?.!,।]+", " ", re.sub(r"[‌‍]", "", q)).strip() == key:
                 n += 1
         return n >= limit
 
@@ -3574,9 +3577,11 @@ class CallSession:
                 continue
             q = re.split(r"(?<=[.!।])\s+", _strip_markers(m["content"] or "").strip())[-1]
             if q.endswith("?"):
-                # Only spaces and punctuation are evened out: \W would also
-                # strip Telugu vowel signs and garble the question.
-                key = re.sub(r"[\s?.!,।]+", " ", q).strip()
+                # Only spaces, punctuation and zero-width joiners are evened
+                # out: \W would also strip Telugu vowel signs and garble the
+                # question. Joiners are deleted, not spaced, so both
+                # spellings of "టీమ్‌కి" land on one key.
+                key = re.sub(r"[\s?.!,।]+", " ", re.sub(r"[‌‍]", "", q)).strip()
                 counts[key] = counts.get(key, 0) + 1
         # The qualification decides the I.E.M fee -- without it the call can't
         # go anywhere -- so it may be asked (rephrased) more often. A real call
@@ -3751,7 +3756,10 @@ class CallSession:
                 f"NOT transfer and do NOT offer to connect -- reply ONLY: \"{noinfo}\" They can still be connected "
                 "later if they themselves ask for the team.")}]
         if last.rstrip().endswith("?") or re.search(
-                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|बोलो|बताओ|बताइए|कितना|कितनी|क्या|कब|कहाँ|कैसे|मिलेगा|है ना|నా\?)", last):
+                r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|"
+                # చెప్పండి/చెప్తారా joined 2026-10-17: "బ్యాచ్ టైమింగ్స్ చెప్పండి"
+                # carried no other marker and was answered with documents.
+                r"చెప్పండి|చెప్పు|చెప్తారా|చెబుతారా|बोलो|बताओ|बताइए|कितना|कितनी|क्या|कब|कहाँ|कैसे|मिलेगा|है ना|నా\?)", last):
             fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
                 (self.client or {}).get("reply_language") or "Telugu", _TEAM_WILL_CALL["Telugu"]) + "\""
                         if self._transfer_declined_standing() else "the transfer sentence")
@@ -3911,6 +3919,15 @@ class CallSession:
                         continue
                     if say and self._offer_limit_reached() and _CONNECT_OFFER_RX.search(say):
                         log.info("dropped a third offer to connect: %r", say)
+                        continue
+                    if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
+                            and self._transfer_declined_standing()):
+                        # The owner's rule (2026-10-17): once the caller said
+                        # no, the offer is never spoken again -- a real call
+                        # re-offered four times after a clear "వద్దండి". The
+                        # standing no lifts when the caller themselves brings
+                        # up joining or the team.
+                        log.info("dropped a connect offer -- the caller already said no: %r", say)
                         continue
                     if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
                             and _DECLINE_ANYWHERE_RX.search(self._last_caller_words() or "")):
