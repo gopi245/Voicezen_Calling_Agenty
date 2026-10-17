@@ -4479,23 +4479,27 @@ class CallSession:
                     "lead_status": parsed.get("lead_status"),
                     "transferred_to_team": self._transfer_requested,
                 }
-                # The caller said YES to the team: their details go straight
-                # to the team member on WhatsApp (owner's ask, 2026-10-17),
-                # whichever way the live transfer itself went.
+                # EVERY finished call sends the student's details to the team
+                # member on WhatsApp (owner's ask, 2026-10-17), in the owner's
+                # own 8-point shape -- a dash where the call didn't produce
+                # the answer, so the team sees at a glance what's missing.
                 alert_to = (self.client or {}).get("lead_alert_whatsapp")
-                if alert_to and self._transfer_requested:
+                if alert_to:
                     phone = self._to_number if self._direction == "outbound" else self._from_number
-                    lines = ["SR Electrical - new lead (said YES to team connect)"]
-                    for label, val in [("Name", caller_name),
-                                       ("Qualification", parsed.get("qualification")),
-                                       ("Course", parsed.get("course")),
-                                       ("Mode", parsed.get("training_mode")),
-                                       ("Batch", parsed.get("batch")),
-                                       ("Can start", parsed.get("start_when")),
-                                       ("Phone", phone),
-                                       ("Summary", summary)]:
-                        if val:
-                            lines.append(f"{label}: {val}")
+                    interest = parsed.get("lead_status") or "-"
+                    if self._transfer_requested:
+                        interest = f"{interest} (said YES, transferred to team)"
+                    lines = ["SR Electrical - call details",
+                             f"1. Student Full Name: {caller_name or '-'}",
+                             f"2. Qualification: {parsed.get('qualification') or '-'}",
+                             f"3. Preferred Program: {parsed.get('course') or '-'}",
+                             f"4. Training Mode: {parsed.get('training_mode') or '-'}",
+                             f"5. Preferred Batch Timing: {parsed.get('batch') or '-'}",
+                             f"6. Joining Date: {parsed.get('start_when') or '-'}",
+                             f"7. Contact Number: {phone or '-'}",
+                             f"8. Admission Interest: {interest}"]
+                    if summary:
+                        lines.append(f"Summary: {summary}")
                     await asyncio.to_thread(voicezen.send_lead_alert, alert_to, "\n".join(lines))
             except Exception:
                 log.exception("call summary/extraction failed -- reporting without one")
