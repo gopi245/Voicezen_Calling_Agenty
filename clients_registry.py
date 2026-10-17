@@ -85,7 +85,8 @@ CLIENTS: dict[str, dict] = {
         "stt_prompt": (
             "SR ఎలక్ట్రికల్, ఐఈఎం, ఐ ఈ ఎం, IEM, ఇండస్ట్రియల్ ఎలక్ట్రికల్ మెయింటెనెన్స్, హోమ్ ఆటోమేషన్, "
             "కోర్సు, ఫీజు, ప్లేస్‌మెంట్, జాబ్, సాలరీ, అడ్మిషన్, బీటెక్, ఈఈఈ, డిప్లొమా, ఐటీఐ, "
-            "ఎలక్ట్రీషియన్, ప్రాక్టికల్స్, సర్టిఫికేట్, ట్రైనింగ్, బ్యాచ్, ఎల్ అండ్ టీ మెట్రో, ఫార్మా"
+            "ఎలక్ట్రీషియన్, ప్రాక్టికల్స్, సర్టిఫికేట్, ట్రైనింగ్, బ్యాచ్, ఎల్ అండ్ టీ మెట్రో, ఫార్మా, "
+            "ఆన్‌లైన్ క్లాసెస్, టైమింగ్స్, అడ్రస్, ఎస్ ఆర్ నగర్, రిజిస్ట్రేషన్, డాక్యుమెంట్స్, టెన్త్, ఇంటర్, డిగ్రీ"
         ),
         # Live transfer target when the agent says [[TRANSFER]].
         # Spoken-text fixes: the model keeps writing ITI as "ఇటీవలి" (recent).
@@ -103,9 +104,10 @@ CLIENTS: dict[str, dict] = {
              "డిప్లొమా ఈఈఈ వాళ్ళకి ఫీజు పంతొమ్మిది వేల రూపాయలండి, కోర్సు నలభై ఐదు రోజులు, వంద శాతం జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
             (r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|ఇంజనీరింగ్|engineering|బీఈ|B\.?E",
              "బీటెక్ ఈఈఈ వాళ్ళకి ఫీజు ఇరవై మూడు వేల రూపాయలండి, కోర్సు నలభై ఐదు రోజులు, వంద శాతం జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
-            (r"టెన్త్|టెంత్|10th|పదో తరగతి|పదవ తరగతి|ఎస్ఎస్సీ|ssc",
-             "సారీ అండి, టెన్త్ క్లాస్ అర్హతతో మా కోర్సులు లేవండి."),
-            (r"బీకాం|బి\.? ?కాం|b\.? ?com|బీఎస్సీ|బి\.? ?ఎస్సీ|b\.? ?sc|బీఏ|డిగ్రీ|degree|ఇంటర్(?!వ్యూ|నెట్|ెస్ట్)|\binter\b|"
+            # 10th/SSC joined the practicals course on 2026-10-17 (owner's
+            # updated brief: non-technical students welcome at ₹15,000).
+            (r"టెన్త్|టెంత్|10th|పదో తరగతి|పదవ తరగతి|ఎస్ఎస్సీ|ssc|"
+             r"బీకాం|బి\.? ?కాం|b\.? ?com|బీఎస్సీ|బి\.? ?ఎస్సీ|b\.? ?sc|బీఏ|డిగ్రీ|degree|ఇంటర్(?!వ్యూ|నెట్|ెస్ట్)|\binter\b|"
              r"ఎంబీఏ|mba|ఎంసీఏ|mca",
              "మీరు కూడా జాయిన్ అవ్వొచ్చండి. ప్రాక్టికల్స్ కోర్సు ఫీజు పదిహేను వేల రూపాయలు, నలభై ఐదు రోజులు, సర్టిఫికేట్ ఇస్తామండి."),
         ],
@@ -119,12 +121,13 @@ CLIENTS: dict[str, dict] = {
                          "ఐ.ఈ.ఎం": "ఐ ఈ ఎం", "ఐ. ఈ. ఎం": "ఐ ఈ ఎం", "I.E.M": "ఐ ఈ ఎం", "I. E. M": "ఐ ఈ ఎం",
                          "IEM": "ఐ ఈ ఎం", "ఇటీవలి ITI": "ఐటీఐ", "ఇటీవలి ఐటీఐ": "ఐటీఐ", "ITI": "ఐటీఐ", "ఇటీఐ": "ఐటీఐ",
                          "ఇంటర్నేషనల్ టెక్నికల్ ఇన్స్టిట్యూట్": "ఐటీఐ"},
-        # Questions the client's brief has no answer for -> always the
-        # transfer sentence (the model invented answers in testing).
+        # Questions the client's brief has no answer for -> the no-info line.
+        # Address, timings, batches, online classes and the documents overview
+        # came OUT of this list on 2026-10-17: the owner's updated brief gave
+        # the bot those answers.
         "transfer_topics": (
             r"హాస్టల్|hostel|రూమ్|ఫుడ్|భోజనం|ఈఎంఐ|EMI|ఇన్‌స్టాల్‌మెంట్|ఇన్స్టాల్మెంట్|డిస్కౌంట్|discount|తగ్గిస్తారా|"
-            r"అడ్రస్|address|ఎక్కడ ఉంది|లొకేషన్|location|టైమింగ్|timing|ఎన్ని గంటలకు|బ్యాచ్|batch|"
-            r"ఆన్‌లైన్|ఆన్లైన్|online|గవర్నమెంట్|government|అప్రూవ్|approved|గుర్తింపు|డాక్యుమెంట్|document|"
+            r"గవర్నమెంట్|government|అప్రూవ్|approved|గుర్తింపు|"
             r"లోన్|loan|ఏజ్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
         ),
         # Tell the model which questions it has already asked twice.

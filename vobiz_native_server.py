@@ -3566,18 +3566,16 @@ class CallSession:
                 f"The caller just said \"{last}\" -- that is NO to connecting them to the team. Do NOT transfer and "
                 "do NOT say the transfer sentence. Reply only: \"పర్లేదు అండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.\"")}]
         quals = (self.client or {}).get("qualification_lines") or []
-        ha_only = (any(m["role"] == "user" and "ఆటోమేషన్" in (m["content"] or "") for m in self.messages)
-                   and not any(m["role"] == "assistant" and "ఐ ఈ ఎం కోర్సు చేయాలండి" in (m["content"] or "")
-                               for m in self.messages)
-                   and not any(m["role"] == "user" and re.search(r"ఐ ?ఈ ?ఎం|ఐఈఎం|\bIEM\b|ఇండస్ట్రియల్",
-                                                                   m["content"] or "", re.I) for m in self.messages))
+        # (The old "ha_only" gate -- skip fee lines while the caller was on
+        # Home Automation -- went with that course on 2026-10-17: SR teaches
+        # one course now, so a stray "ఆటోమేషన్" must not disable fee rules.)
         fee_given = any(m["role"] == "assistant" and ("వాళ్ళకి ఫీజు" in (m["content"] or "")
                                                      or "ప్రాక్టికల్స్ కోర్సు ఫీజు" in (m["content"] or ""))
                         for m in self.messages)
         asked_qual = "చదివార" in next((m["content"] for m in reversed(self.messages)
                                        if m["role"] == "assistant"), "")
         line = (next((ln for rx, ln in quals if re.search(rx, last, re.I)), None)
-                if not ha_only and (asked_qual or not fee_given) else None)
+                if (asked_qual or not fee_given) else None)
         if line:
             # The fee is picked here from what they studied, never by the
             # model: a test replay quoted the B.Tech fee to an ITI student.
