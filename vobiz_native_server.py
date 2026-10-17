@@ -259,7 +259,7 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
 # గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
-_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా(?=[\s.,!?]*$)|ఆఁ|ఆ(?=[\s.,!?ఆ]*$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
+_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా(?=[\s.,!?]*$)|ఆఁ|ఆ(?=[\s.,!?ఆ]*$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|కానివ్వండి|కానీయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 # Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
 # సార్ addressed at the bot) was transferred as a person-request (sim,
@@ -301,7 +301,15 @@ _DECLINE_RX = re.compile(
 # A decline buried anywhere in the sentence ("సరే వద్దులెండి, తర్వాత చేస్తాను"):
 # vetoes transfer consent, and a connect offer is never spoken right after it.
 _DECLINE_ANYWHERE_RX = re.compile(
-    r"వద్ద|వొద్దు|అబ్బే|అక్కర్లేదు|అవసరం లేదు|ఇప్పుడు కాదు|తర్వాత|not now|later|\bno\b|నో\b|नहीं|मत", re.I)
+    r"వద్ద|వొద్దు|అబ్బే|అక్కర్లేదు|అవసరం లేదు|ఇప్పుడు కాదు|తర్వాత|మళ్ళీ చేస్తా|మళ్ళీ కాల్|ఉంటా(ను)?(?=[\s.,!]|$)|"
+    r"not now|later|\bno\b|నో\b|नहीं|मत", re.I)
+
+
+def _really_declines(text: str) -> bool:
+    """A decline word anywhere -- unless the caller is NEGATING the no:
+    "వద్దు అనట్లేదు, కనెక్ట్ చేయండి" is a yes, not a no (sim, 2026-10-17)."""
+    return bool(_DECLINE_ANYWHERE_RX.search(text)
+                and not re.search(r"అనట్లేదు|అనడం ?లేదు|అనలేదు", text))
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -581,7 +589,8 @@ _GOODBYE_PATTERN = re.compile(
         r"\bbye\b", r"\bbyee\b", r"good ?bye", r"\bthank", r"\bthanks\b", r"\btq\b", r"that'?s all",
         r"not interested", r"no need", r"call later", r"\bok bye",
         "బై", "బాయ్", "థాంక్", "ధన్యవాద", "ఉంటాను", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
-        "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ",
+        "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ", "మళ్ళీ చేస్తా", "మళ్ళీ కాల్ చేస్తా",
+        "ఉంటా మరి", "ఉంటానండి",
     ]),
     re.IGNORECASE,
 )
@@ -2377,7 +2386,7 @@ FIXED_LANGUAGES = {"te-IN": "te", "en-IN": "en", "hi-IN": "hi"}
 
 _NOT_A_NAME = re.compile(
     r"ఇది|అది|అవుతుంది|ఉంది|ఉందా|కాదు|సరే|ఓకే|కూల్|రేపు|రేపటి|చేస్తా|చెప్పండి|ఎంత|ఎన్ని|వద్దు|బై|హలో|"
-    r"కోర్సు|ఫీజు|క్లాస్|తెలుసు|అలాగే|మంచిది|okay|cool|fine|yes|no", re.I)
+    r"కోర్సు|ఫీజు|క్లాస్|తెలుసు|అలాగే|మంచిది|okay|cool|fine|yes|no\b", re.I)
 
 
 def _looks_like_name(ans: str) -> bool:
@@ -3497,9 +3506,12 @@ class CallSession:
         # matched the assent words and the caller was transferred over a
         # clear no. The same veto covers "...వద్దండి, ఫారిన్ జాబ్స్ ఉంటాయా?"
         # slipping through on its person-words.
-        if _DECLINE_ANYWHERE_RX.search(last):
+        if _really_declines(last):
             return False
-        if _PERSON_RX.search(last) and not _DECLINE_RX.match(last):
+        # The decline veto above already handled any real no -- so a start
+        # like "వద్దు అనట్లేదు, కనెక్ట్ చేయండి" (a NEGATED no) still counts
+        # as asking for the team.
+        if _PERSON_RX.search(last):
             return True
         # The offer counts from one turn further back when the turn between
         # was only us answering THEIR question: a real caller (2026-10-17)
@@ -3554,6 +3566,23 @@ class CallSession:
             return False
         return sum(1 for m in self.messages if m["role"] == "assistant"
                    and _CONNECT_OFFER_RX.search(m["content"] or "")) >= 2
+
+    def _declined_offer_now(self) -> bool:
+        """The caller's latest words decline our just-made connect offer --
+        loosely: "హా ఒక్క నిమిషం ఆగండి... వద్దు లే" starts with a yes-word
+        but IS a no. Used by the end-of-call gates, which run after the new
+        reply is stored, so the offer is found before the latest USER turn
+        rather than taken as the last assistant message."""
+        if not (self.client or {}).get("transfer_to"):
+            return False
+        ui = next((i for i in range(len(self.messages) - 1, -1, -1)
+                   if self.messages[i]["role"] == "user"), None)
+        if ui is None:
+            return False
+        last = (self.messages[ui]["content"] or "").strip()
+        prev = next((self.messages[i]["content"] for i in range(ui - 1, -1, -1)
+                     if self.messages[i]["role"] == "assistant"), "") or ""
+        return bool(_CONNECT_OFFER_RX.search(prev) and _really_declines(last))
 
     def _declined_transfer(self) -> bool:
         """The caller just said no ("వద్దండి") to our offer to connect them.
@@ -3759,7 +3788,7 @@ class CallSession:
                 r"(ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏ |ఏం|ఏమి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా|చేయొచ్చా|అవుతుందా|ఉన్నాయా|ఉందండి|ఉంటుందండి|వస్తుందండి|కదా|కదండి|"
                 # చెప్పండి/చెప్తారా joined 2026-10-17: "బ్యాచ్ టైమింగ్స్ చెప్పండి"
                 # carried no other marker and was answered with documents.
-                r"చెప్పండి|చెప్పు|చెప్తారా|చెబుతారా|बोलो|बताओ|बताइए|कितना|कितनी|क्या|कब|कहाँ|कैसे|मिलेगा|है ना|నా\?)", last):
+                r"చెప్పండి|చెప్పు|చెప్తారా|చెబుతారా|సాలరీ|శాలరీ|జీతం|बोलो|बताओ|बताइए|कितना|कितनी|क्या|कब|कहाँ|कैसे|मिलेगा|है ना|నా\?)", last):
             fallback = ("the sentence \"" + _TEAM_WILL_CALL.get(
                 (self.client or {}).get("reply_language") or "Telugu", _TEAM_WILL_CALL["Telugu"]) + "\""
                         if self._transfer_declined_standing() else "the transfer sentence")
@@ -3902,7 +3931,8 @@ class CallSession:
                     bye_cfg = (self.client or {}).get("goodbye_phrase")
                     if (say and not self._legacy_engine and bye_cfg
                             and (bye_cfg in say or re.search(r"(^|\s)బై[!.\s]*$", say))
-                            and not _caller_said_goodbye(self._last_caller_words())):
+                            and (not _caller_said_goodbye(self._last_caller_words())
+                                 or self._declined_offer_now())):
                         # The model closed the call on a lone "ఉమ్." (a real
                         # call, 2026-10-17): a goodbye is only spoken when the
                         # caller said bye / thanks / not interested.
@@ -3930,7 +3960,7 @@ class CallSession:
                         log.info("dropped a connect offer -- the caller already said no: %r", say)
                         continue
                     if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
-                            and _DECLINE_ANYWHERE_RX.search(self._last_caller_words() or "")):
+                            and _really_declines(self._last_caller_words() or "")):
                         # "సరే వద్దులెండి, తర్వాత చేస్తాను" got "పర్లేదండి..."
                         # with a fresh connect offer tacked on (sim, 2026-10-17).
                         log.info("dropped a connect offer right after a decline: %r", say)
@@ -4024,9 +4054,15 @@ class CallSession:
                               "content": full if self._legacy_engine or not spoken_text else spoken_text})
         spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
+        if end_call and not self._legacy_engine and self._declined_offer_now():
+            # "వద్దు లే" right after the connect offer declines the TRANSFER,
+            # not the call (sim, 2026-10-17) -- the caller stays on the line.
+            log.info("END_CALL right after a no to the offer -- staying on the line")
+            end_call = False
         bye = (self.client or {}).get("goodbye_phrase")
         if (not end_call and bye and bye in spoken_full and not spoken_full.rstrip().endswith("?")
-                and (self._legacy_engine or _caller_said_goodbye(self._last_caller_words()))):
+                and (self._legacy_engine or (_caller_said_goodbye(self._last_caller_words())
+                                             and not self._declined_offer_now()))):
             # The script's goodbye line only ever closes a call: a real call
             # (2026-10-12) said it, didn't hang up, and said it again. But
             # only when the CALLER said goodbye -- this rule once hung up on
