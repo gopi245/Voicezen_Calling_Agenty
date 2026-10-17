@@ -259,7 +259,7 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
 # గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
-_ASSENT_RX = re.compile(r"^\W*(హా|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
+_ASSENT_RX = re.compile(r"^\W*(హా|ఆఁ|ఆ(?=[\s.,!?]|$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 # Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
 # సార్ addressed at the bot) was transferred as a person-request (sim,
@@ -3498,10 +3498,20 @@ class CallSession:
             return False
         if _PERSON_RX.search(last) and not _DECLINE_RX.match(last):
             return True
-        prev = next((m["content"] for m in reversed(self.messages[:-1])
-                     if m["role"] == "assistant"), "") or ""
-        return bool(_CONNECT_OFFER_RX.search(prev) and not _DECLINE_RX.match(last)
-                    and _ASSENT_RX.match(last))
+        # The offer counts from one turn further back when the turn between
+        # was only us answering THEIR question: a real caller (2026-10-17)
+        # said "ఓకే అండి, శాలరీ ఎంత?", got the salary, said "సరేనండి." --
+        # and the yes no longer counted. Only when our latest reply isn't
+        # itself asking something else, so "సరే ఆఫ్‌లైన్" answering a batch
+        # question never reads as transfer consent.
+        prevs = [m["content"] or "" for m in reversed(self.messages[:-1])
+                 if m["role"] == "assistant"][:2]
+        if not prevs:
+            return False
+        offer_live = bool(_CONNECT_OFFER_RX.search(prevs[0])) or bool(
+            len(prevs) > 1 and _CONNECT_OFFER_RX.search(prevs[1])
+            and not prevs[0].rstrip().endswith("?"))
+        return bool(offer_live and not _DECLINE_RX.match(last) and _ASSENT_RX.match(last))
 
     def _transfer_declined_standing(self) -> bool:
         """True once the caller has said no to our connect offer and has not
@@ -3577,6 +3587,13 @@ class CallSession:
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
         # ask its own next question.
         last = self._last_caller_words() or ""
+        if getattr(self, "_ending_suppressed", False):
+            # A real call (2026-10-17): after a suppressed goodbye the model
+            # told a live caller the call had ended and repeated the welcome.
+            notes.append({"role": "system", "content": (
+                "Your previous reply tried to END the call, but the call is STILL LIVE and the caller is "
+                "still talking. NEVER say the call has ended, NEVER apologise about the call, and NEVER "
+                "repeat the welcome greeting -- just answer them and continue the flow as normal.")})
         if self._declined_transfer():
             # A real call (2026-10-15) packed the no and a question into one
             # sentence ("వద్దండి, ఎక్స్పెక్టెడ్ శాలరీ ఎంతండి?") and the
@@ -3839,6 +3856,7 @@ class CallSession:
                   and bool(go_phrase) and self._transfer_consented()
                   and not self._transfer_declined_standing() and not self._question_after_offer())
         dropped_offer_after_decline = False
+        dropped_goodbye = False
         gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
@@ -3881,6 +3899,7 @@ class CallSession:
                         # call, 2026-10-17): a goodbye is only spoken when the
                         # caller said bye / thanks / not interested.
                         log.info("dropped a goodbye sentence -- the caller didn't say goodbye: %r", say)
+                        dropped_goodbye = True
                         continue
                     if say and say.endswith("?") and self._known_reask(say):
                         log.info("dropped a question whose answer is already known: %r", say)
@@ -3978,7 +3997,14 @@ class CallSession:
             await queue.put(None)
             raise RuntimeError("stream produced no text")
 
-        self.messages.append({"role": "assistant", "content": full})
+        # The history keeps what the CALLER actually heard: a suppressed
+        # goodbye stored as written ("...బై!") convinced the model the call
+        # was over -- it then told a live caller "కాల్ ముగిసింది" and replayed
+        # the welcome greeting (a real call, 2026-10-17). Gundusoodhi's legacy
+        # path keeps the raw reply exactly as before.
+        spoken_text = " ".join(said).strip()
+        self.messages.append({"role": "assistant",
+                              "content": full if self._legacy_engine or not spoken_text else spoken_text})
         spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
         bye = (self.client or {}).get("goodbye_phrase")
@@ -4008,6 +4034,11 @@ class CallSession:
         if transfer and self._declined_transfer():
             log.warning("transfer skipped: the caller said no (%r)", self._last_caller_words())
             transfer = False
+        # A suppressed ending (dropped goodbye or an ignored END marker)
+        # leaves the model convinced the call is over -- the next turn gets
+        # a "still live" note so it never says the call has ended.
+        self._ending_suppressed = (not self._legacy_engine and not end_call and not transfer
+                                   and (dropped_goodbye or END_MARKER in full))
         log.info("bot: %s%s", spoken_full, "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up (or transfers)
         # after it if the reply asked for that.
