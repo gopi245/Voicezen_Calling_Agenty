@@ -3594,6 +3594,20 @@ class CallSession:
                 f"They just told you their qualification. Say this sentence WORD FOR WORD first: \"{line}\" -- "
                 "then ask the next step you still need (their name, or when they can start). Do not change any "
                 "number and do not add any other fee.")}]
+        if quals and re.search(r"శాలరీ|సాలరీ|సేలరీ|salary|జీతం", last, re.I):
+            # A practicals-course student has no salary range: a real call
+            # (2026-10-17) invented "పదిహేను వేల నుంచి ఇరవై వేల" for an Inter
+            # student, a figure that exists nowhere in the client's brief.
+            practicals_only = (any(m["role"] == "assistant" and "ప్రాక్టికల్స్ కోర్సు ఫీజు" in (m["content"] or "")
+                                   for m in self.messages)
+                               and not any(m["role"] == "assistant" and "వాళ్ళకి ఫీజు" in (m["content"] or "")
+                                           for m in self.messages))
+            if practicals_only:
+                notes.append({"role": "system", "content": (
+                    "They asked about salary, and they are a PRACTICALS-course student (no placement program): "
+                    "no salary range exists for them -- NEVER say any figure. Say word for word: "
+                    "\"ప్రాక్టికల్స్ కోర్సుకి మా వైపు నుంచి ఫిక్స్‌డ్ సాలరీ ఉండదండి. కాంట్రాక్ట్ బేసిస్ జాబ్స్‌లో సాలరీ పని బట్టి "
+                    "మారుతుందండి.\" then ask your next flow question.")})
         known = []
         for i, m in enumerate(self.messages[:-1]):
             if m["role"] != "assistant":
