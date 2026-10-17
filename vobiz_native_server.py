@@ -259,7 +259,7 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
 # గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
-_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా|ఆఁ|ఆ(?=[\s.,!?]|$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
+_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా(?=[\s.,!?]*$)|ఆఁ|ఆ(?=[\s.,!?ఆ]*$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 # Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
 # సార్ addressed at the bot) was transferred as a person-request (sim,
@@ -296,12 +296,12 @@ _DATEISH_RX = re.compile(
     r"[0-9]{1,2}\s*(st|nd|rd|th)?\b", re.I)
 _CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్నాను|కి connect చేస్తున్నాను|connecting you to our team|टीम से कनेक्ट कर रही")
 _DECLINE_RX = re.compile(
-    r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
+    r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|అబ్బే|అబ్బెబ్బే|అక్కర్లేదు|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
     r"నో\b|no\b|nope|not now|later|नहीं|अभी नहीं|रहने दो|बाद में|मत)", re.I)
 # A decline buried anywhere in the sentence ("సరే వద్దులెండి, తర్వాత చేస్తాను"):
 # vetoes transfer consent, and a connect offer is never spoken right after it.
 _DECLINE_ANYWHERE_RX = re.compile(
-    r"వద్ద|వొద్దు|అవసరం లేదు|ఇప్పుడు కాదు|తర్వాత|not now|later|\bno\b|నో\b|नहीं|मत", re.I)
+    r"వద్ద|వొద్దు|అబ్బే|అక్కర్లేదు|అవసరం లేదు|ఇప్పుడు కాదు|తర్వాత|not now|later|\bno\b|నో\b|नहीं|मत", re.I)
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -3607,7 +3607,7 @@ class CallSession:
             # Anything substantial after the no counts as a question, keyword
             # or not -- STT garbled "ఎంతండి" into "అంటండి" on a real call
             # (2026-10-15) and the keyword check missed it.
-            rest = re.sub(r"^(\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|"
+            rest = re.sub(r"^(\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|అబ్బే|అబ్బెబ్బే|అక్కర్లేదు|లేదు|లేదండి|"
                           r"అవసరం లేదు|ఇప్పుడు వద్దు|నో|no|nope|not now|नहीं|అండి|సరే)[,.\s]*)+", "", last, flags=re.I)
             if len(rest.strip()) >= 4:
                 return [{"role": "system", "content": (
