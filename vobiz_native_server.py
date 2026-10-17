@@ -294,6 +294,10 @@ _CONNECT_GO_RX = re.compile(r"కనెక్ట్ చేస్తున్న�
 _DECLINE_RX = re.compile(
     r"^\W*(వద్దు|వద్దండి|వద్దు అండి|వొద్దు|వద్దులే|లేదు|లేదండి|అవసరం లేదు|ఇప్పుడు వద్దు|తర్వాత|"
     r"నో\b|no\b|nope|not now|later|नहीं|अभी नहीं|रहने दो|बाद में|मत)", re.I)
+# A decline buried anywhere in the sentence ("సరే వద్దులెండి, తర్వాత చేస్తాను"):
+# vetoes transfer consent, and a connect offer is never spoken right after it.
+_DECLINE_ANYWHERE_RX = re.compile(
+    r"వద్ద|వొద్దు|అవసరం లేదు|ఇప్పుడు కాదు|తర్వాత|not now|later|\bno\b|నో\b|नहीं|मत", re.I)
 RECENT_LEAD_WINDOW_S = 6 * 3600
 LEAD_CALLBACK_GREETING = ("నమస్కారం అండి, VoiceZen నుంచి. మేము ఇందాక మీకు కాల్ చేశామండి, "
                           "మీరు మా వెబ్‌సైట్‌లో కాల్ బ్యాక్ అడిగారు కదా. చెప్పండి, ఏం తెలుసుకోవాలనుకుంటున్నారు?")
@@ -3481,6 +3485,13 @@ class CallSession:
         last = (self._last_caller_words() or "").strip()
         if not last:
             return False
+        # A decline word ANYWHERE vetoes consent: a sim call (2026-10-17)
+        # opened with "సరే వద్దులెండి, తర్వాత చేస్తాను" -- the leading "సరే"
+        # matched the assent words and the caller was transferred over a
+        # clear no. The same veto covers "...వద్దండి, ఫారిన్ జాబ్స్ ఉంటాయా?"
+        # slipping through on its person-words.
+        if _DECLINE_ANYWHERE_RX.search(last):
+            return False
         if _PERSON_RX.search(last) and not _DECLINE_RX.match(last):
             return True
         prev = next((m["content"] for m in reversed(self.messages[:-1])
@@ -3823,6 +3834,7 @@ class CallSession:
         go_now = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
                   and bool(go_phrase) and self._transfer_consented()
                   and not self._transfer_declined_standing() and not self._question_after_offer())
+        dropped_offer_after_decline = False
         gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
@@ -3876,6 +3888,13 @@ class CallSession:
                         continue
                     if say and self._offer_limit_reached() and _CONNECT_OFFER_RX.search(say):
                         log.info("dropped a third offer to connect: %r", say)
+                        continue
+                    if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
+                            and _DECLINE_ANYWHERE_RX.search(self._last_caller_words() or "")):
+                        # "సరే వద్దులెండి, తర్వాత చేస్తాను" got "పర్లేదండి..."
+                        # with a fresh connect offer tacked on (sim, 2026-10-17).
+                        log.info("dropped a connect offer right after a decline: %r", say)
+                        dropped_offer_after_decline = True
                         continue
                     if say and _CONNECT_GO_RX.search(say) and self._question_after_offer():
                         log.info("dropped a transfer sentence: they asked a question, not yes: %r", say)
@@ -3936,8 +3955,16 @@ class CallSession:
             # The repeat guard can drop a reply's ONLY sentence (a question
             # already asked twice), which left dead air on a real call
             # (2026-10-15) -- acknowledge instead of saying nothing.
-            filler = {"Telugu": "సరేనండి.", "English": "Alright.", "Hindi": "ठीक है जी।"}.get(
-                (self.client or {}).get("reply_language") or "Telugu", "సరేనండి.")
+            lang_f = (self.client or {}).get("reply_language") or "Telugu"
+            if dropped_offer_after_decline:
+                # Their no deserves the proper acknowledgement, not "సరేనండి."
+                filler = {"Telugu": "పర్లేదండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.",
+                          "English": "No problem, call us anytime on this number.",
+                          "Hindi": "कोई बात नहीं जी, जब भी ज़रूरत हो इसी नंबर पर कॉल कीजिए।"}.get(
+                    lang_f, "పర్లేదండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి.")
+            else:
+                filler = {"Telugu": "సరేనండి.", "English": "Alright.", "Hindi": "ठीक है जी।"}.get(
+                    lang_f, "సరేనండి.")
             spoken_any = True
             said.append(filler)
             full = filler
