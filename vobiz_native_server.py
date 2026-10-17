@@ -305,6 +305,14 @@ _DECLINE_ANYWHERE_RX = re.compile(
     r"not now|later|\bno\b|నో\b|नहीं|मत", re.I)
 
 
+# Words that say "I'm in": they re-open the connect offer past the two-ask
+# cap, and lift a standing no. A real call (2026-10-17) said "ఓకే నాకు
+# ఇంట్రెస్ట్ ఉందండి" after both offers were spent and got a bare "సరేనండి."
+_INTEREST_RX = re.compile(
+    r"ఇంట్రెస్ట్ ఉంద|ఇంటరెస్ట్ ఉంద|జాయిన్ అవుతా|జాయిన్ అవ్వాల|జాయిన్ చేస్తా|చేరతా|చేరాల|చేరుతా|"
+    r"రిజిస్ట్రేషన్ చేసుకోవాల|రిజిస్ట్రేషన్ చేయాల|రిజిస్ట్రేషన్ చేసుకుంటా|అడ్మిషన్ కావాల|interested|want to join", re.I)
+
+
 def _really_declines(text: str) -> bool:
     """A decline word anywhere -- unless the caller is NEGATING the no:
     "వద్దు అనట్లేదు, కనెక్ట్ చేయండి" is a yes, not a no (sim, 2026-10-17)."""
@@ -3480,6 +3488,11 @@ class CallSession:
         repeat_guard); the qualification may be asked up to four times."""
         if not (self.client or {}).get("repeat_guard"):
             return False
+        if _CONNECT_OFFER_RX.search(question):
+            last_now = self._last_caller_words() or ""
+            if _INTEREST_RX.search(last_now) and not _really_declines(last_now):
+                # Interest re-opens the connect offer, whatever the count.
+                return False
         # Zero-width joiners deleted outright: "టీమ్‌కి" with and without
         # ‌ read as two different questions on a real call (2026-10-17),
         # so the limit never tripped and the offer was spoken four times.
@@ -3547,7 +3560,8 @@ class CallSession:
         after = self.messages[declined_at + 1:]
         for i, m in enumerate(after):
             if m["role"] == "user" and re.search(
-                    r"కనెక్ట్|connect|మాట్లాడాలి|సార్|మేడం|staff|టీమ్|team|జాయిన్|join|అడ్మిషన్", m["content"] or "", re.I):
+                    r"కనెక్ట్|connect|మాట్లాడాలి|సార్|మేడం|staff|టీమ్|team|జాయిన్|join|అడ్మిషన్|"
+                    r"ఇంట్రెస్ట్ ఉంద|ఇంటరెస్ట్ ఉంద|రిజిస్ట్రేషన్|చేరతా|చేరాల|interested", m["content"] or "", re.I):
                 return False
             # A yes right after a FRESH offer also lifts the earlier no: a
             # real caller (2026-10-15) said no to one course, warmed up to
@@ -3561,8 +3575,12 @@ class CallSession:
 
     def _offer_limit_reached(self) -> bool:
         """The connect offer has been made twice (clients with transfer_to).
-        A real call (2026-10-12) offered it three replies in a row."""
+        A real call (2026-10-12) offered it three replies in a row. A caller
+        who just said they are interested re-opens the offer."""
         if not (self.client or {}).get("transfer_to"):
+            return False
+        last = self._last_caller_words() or ""
+        if _INTEREST_RX.search(last) and not _really_declines(last):
             return False
         return sum(1 for m in self.messages if m["role"] == "assistant"
                    and _CONNECT_OFFER_RX.search(m["content"] or "")) >= 2
@@ -3621,6 +3639,15 @@ class CallSession:
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
         # ask its own next question.
         last = self._last_caller_words() or ""
+        if ((self.client or {}).get("transfer_to") and _INTEREST_RX.search(last)
+                and not _really_declines(last) and not self._transfer_consented()):
+            # "నాకు ఇంట్రెస్ట్ ఉందండి" deserves the offer, not a bare
+            # acknowledgement (a real call, 2026-10-17).
+            notes.append({"role": "system", "content": (
+                "The caller just said they are INTERESTED in joining. Acknowledge warmly in one short "
+                "sentence and end THIS reply with: \"మా అడ్మిషన్ టీమ్‌కి కనెక్ట్ చేయమంటారండి?\" -- the "
+                "offer comes NOW, in this very reply, even if it was offered before and even if you still "
+                "don't have their name. Do not ask for the name or anything else instead.")})
         if getattr(self, "_ending_suppressed", False):
             # A real call (2026-10-17): after a suppressed goodbye the model
             # told a live caller the call had ended and repeated the welcome.
