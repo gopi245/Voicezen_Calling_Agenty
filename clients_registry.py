@@ -67,6 +67,9 @@ CLIENTS: dict[str, dict] = {
         # The site-visit day is the whole point of the call: up to four asks,
         # not two (a real call hit the cap early and never booked a visit).
         "repeat_limits": {"ఏ రోజు": 4},
+        # Background noise from the caller's side turns into short phrases;
+        # while the bot is mid-sentence, under three words never stops it.
+        "min_interrupt_words": 3,
         "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),

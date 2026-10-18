@@ -3179,7 +3179,11 @@ class CallSession:
                 return
             audible_for = (time.time() - self._playback_started_at
                            if self.playing and self._playback_started_at else 0.0)
-            if _is_minor(text) and talking_left > 1.0 and audible_for > 1.0:
+            # A client can raise the bar (clients_registry "min_interrupt_words"):
+            # on Vedantha Vanam's line background chatter came through as
+            # two-word phrases ("ఎంత బాగుంది", 2026-10-18) and cut the goodbye.
+            too_few = len(_words(text)) < int((self.client or {}).get("min_interrupt_words") or 0)
+            if (_is_minor(text) or too_few) and talking_left > 1.0 and audible_for > 1.0:
                 # One word or an "ఓకే" with the bot well into a sentence:
                 # listening, or noise the recogniser turned into a word
                 # ("Mom", "माझी", "சரி" on a real call). Keep talking.
