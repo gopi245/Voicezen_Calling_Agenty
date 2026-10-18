@@ -4217,6 +4217,9 @@ class CallSession:
                             # (demo, 2026-10-18).
                             say = (f"సరేనండి, {lastc} నుంచి." if not re.search(r"[0-9]", lastc)
                                    else "సరేనండి, మీరు జాయిన్ అయ్యే తేదీ నోట్ చేసుకున్నానండి.")
+                            if said and said[-1].strip(" .") == "సరేనండి":
+                                # The model's own "సరేనండి." already came first.
+                                say = say.replace("సరేనండి, ", "", 1)
                             log.info("swapped a back-to-back offer for a date confirmation: %r", say)
                         else:
                             log.info("dropped a back-to-back repeat of the connect offer: %r", say)
