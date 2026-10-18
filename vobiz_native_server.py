@@ -3442,6 +3442,28 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        end_step = None if self._legacy_engine else self._end_check_step(text)
+        if end_step:
+            # A bare "సరే"/"ఓకే" after a goodbye-type line: ask whether to end
+            # the call; a bare OK to that question ends it. Decided here, not
+            # left to the model: after a "వద్దండి" a test kept circling --
+            # a nonsense callback line, the goodbye twice, then the pitch
+            # again (2026-10-18).
+            lang_e = (self.client or {}).get("reply_language") or "Telugu"
+            if end_step == "ask":
+                line = _END_CHECK.get(lang_e, _END_CHECK["Telugu"])
+            else:
+                line = {"Telugu": "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!",
+                        "English": "Alright, call us anytime on this number. Thank you!",
+                        "Hindi": "ठीक है जी, जब भी ज़रूरत हो इसी नंबर पर कॉल कीजिए। धन्यवाद!"}.get(
+                    lang_e, "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!")
+            self.messages.append({"role": "assistant", "content": line})
+            log.info("bot: %s%s (end check)", line, "  [END_CALL]" if end_step == "close" else "")
+            self._speak_task = asyncio.create_task(self._speak(line, end_call=(end_step == "close"), turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         if not self._legacy_engine and self._after_closing_line(text):
             # The visit is booked and the closing line was said: thanks / OK /
             # bye now ends the call in one short line. A real call (2026-10-18)
@@ -3760,6 +3782,22 @@ class CallSession:
             return False
         return any(m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
                    for m in self.messages)
+
+    def _end_check_step(self, text: str) -> str | None:
+        """"ask" when the caller says a bare సరే/ఓకే right after a goodbye-type
+        line of ours; "close" when they say it right after the end-check
+        question itself. None otherwise (a question is answered normally)."""
+        if not _is_backchannel((text or "").strip()):
+            return None
+        prev = next((m["content"] for m in reversed(self.messages[:-1])
+                     if m["role"] == "assistant"), "") or ""
+        if _END_CHECK["Telugu"] in prev or any(v in prev for v in _END_CHECK.values()):
+            return "close"
+        fo = (self.client or {}).get("final_offer") or ""
+        if (prev.strip() in ("సరేనండి.", "సరేనండి") or "ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి" in prev
+                or (fo and fo in prev) or _TEAM_WILL_CALL["Telugu"] in prev):
+            return "ask"
+        return None
 
     def _after_closing_line(self, text: str) -> bool:
         """Clients with "closing_phrase": our last reply was the booked-call
