@@ -120,7 +120,10 @@ CLIENTS: dict[str, dict] = {
         # A bare B.Tech/Diploma gets the branch question before any fee: a
         # real call (2026-10-18) gave a plain "డిప్లొమా" the EEE fee.
         "branch_ask": {
-            "needs": r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|డిప్లొమా|డిప్లమా|diploma|పాలిటెక్నిక్|polytechnic|ఇంజనీరింగ్|engineering",
+            # Misheard B.Tech forms too: "డీటెక్ అండి" (2026-10-18) matched no
+            # line and the model quoted the practicals fee.
+            "needs": r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|డీటెక్|డి టెక్|వీటెక్|బీట్ ఎక్|బీ టెక్|బిటెక్|"
+                     r"డిప్లొమా|డిప్లమా|టెప్లమా|diploma|పాలిటెక్నిక్|polytechnic|ఇంజనీరింగ్|engineering",
             "given": r"ఈఈఈ|ఈ ఈ ఈ|\bEEE\b|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
                      r"సీఎస్|CSE|కంప్యూటర్|computer|ఈసీఈ|ఈ సీ ఈ|ఈసీ|ఈ సీ|ECE|\bEC\b|ఐటీ|ఐ టీ|\bIT\b|ఆటోమొబైల్|"
                      r"automobile|కెమికల్|chemical|ఏరోనాటికల్|బయోటెక్|బయో టెక్|బ్రాంచ్",
@@ -131,7 +134,7 @@ CLIENTS: dict[str, dict] = {
         # studied -- the model once quoted the B.Tech fee to an ITI student.
         # First match wins; order matters (other branches before plain EEE).
         "qualification_lines": [
-            (r"(బీటెక్|బి\.? ?టెక్|b\.? ?tech|డిప్లొమా|డిప్లమా|diploma|ఐటీఐ|ITI).{0,25}"
+            (r"(బీటెక్|బి\.? ?టెక్|b\.? ?tech|డీటెక్|డి టెక్|వీటెక్|బీ టెక్|బిటెక్|డిప్లొమా|డిప్లమా|టెప్లమా|diploma|ఐటీఐ|ITI).{0,25}"
              # Spoken branch forms too: "బీటెక్ ఈసీ" (ECE) fell through to the
              # EEE fee and a placement promise on a real call (2026-10-18).
              r"(మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|సీఎస్|CSE|కంప్యూటర్|computer|"
@@ -140,10 +143,10 @@ CLIENTS: dict[str, dict] = {
              "మీరు కూడా జాయిన్ అవ్వొచ్చండి. ప్రాక్టికల్స్ కోర్సు ఫీజు పదిహేను వేల రూపాయలు, ఫార్టీ ఫైవ్ డేస్, సర్టిఫికేట్ ఇస్తామండి."),
             (r"ఐటీఐ|ITI|ఐ టి ఐ",
              "ఐటీఐ వాళ్ళకి ఫీజు పదిహేడు వేల రూపాయలండి, కోర్సు ఫార్టీ ఫైవ్ డేస్, హండ్రెడ్ పర్సెంట్ జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
-            (r"డిప్లొమా|డిప్లమా|diploma|పాలిటెక్నిక్|polytechnic",
+            (r"డిప్లొమా|డిప్లమా|టెప్లమా|diploma|పాలిటెక్నిక్|polytechnic",
              "డిప్లొమా ఈఈఈ వాళ్ళకి ఫీజు పంతొమ్మిది వేల రూపాయలండి, కోర్సు ఫార్టీ ఫైవ్ డేస్, హండ్రెడ్ పర్సెంట్ జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
             # \b around B.E: bare "be" matched inside "October" (2026-10-18).
-            (r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|ఇంజనీరింగ్|engineering|బీఈ|\bB\.?E\b",
+            (r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|డీటెక్|డి టెక్|వీటెక్|బీ టెక్|బిటెక్|ఇంజనీరింగ్|engineering|బీఈ|\bB\.?E\b",
              "బీటెక్ ఈఈఈ వాళ్ళకి ఫీజు ఇరవై మూడు వేల రూపాయలండి, కోర్సు ఫార్టీ ఫైవ్ డేస్, హండ్రెడ్ పర్సెంట్ జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
             # 10th/SSC joined the practicals course on 2026-10-17 (owner's
             # updated brief: non-technical students welcome at ₹15,000).
