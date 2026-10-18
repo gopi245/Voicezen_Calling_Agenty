@@ -199,6 +199,13 @@ CLIENTS: dict[str, dict] = {
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
+        # Sentences that must never be spoken, swapped for the true line
+        # (regex, replacement). Online batches exist -- a real call
+        # (2026-10-18) said they don't and the student hung up.
+        "sentence_fixes": [
+            (r"ఆన్\s?‌?లైన్.{0,20}(లేవు|లేవండి|లేదు|లేదండి|ఉండవు|ఉండదు)|ఆఫ్\s?‌?లైన్ క్లాసులే",
+             "ఆఫ్‌లైన్, ఆన్‌లైన్ రెండూ ఉన్నాయండి. ఆన్‌లైన్ బ్యాచ్‌లు ఉదయం, సాయంత్రం సెవెన్ థర్టీ నుంచి ఎయిట్ థర్టీ వరకండి."),
+        ],
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
     },

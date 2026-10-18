@@ -4085,6 +4085,15 @@ class CallSession:
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
                         continue
+                    for rx, rep in ((self.client or {}).get("sentence_fixes") or ()):
+                        # A known-false sentence swapped for the true one before
+                        # it is spoken (clients_registry "sentence_fixes"): SR
+                        # told a real student "ఆన్లైన్లో క్లాసెస్ లేవండి"
+                        # (2026-10-18) -- online batches exist.
+                        if say and not self._legacy_engine and re.search(rx, say):
+                            log.info("replaced a false sentence %r with %r", say, rep)
+                            say = rep
+                            break
                     persuade = (self.client or {}).get("persuade_markers") or ()
                     if (say and not self._legacy_engine and not say.endswith("?")
                             and any(re.sub(r"[‌‍]", "", p) in re.sub(r"[‌‍]", "", say) for p in persuade)
