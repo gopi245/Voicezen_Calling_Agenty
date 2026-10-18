@@ -40,3 +40,4 @@ sparkapi_capture_wf.json
 wf_db_local.sqlite
 # Per-machine editor settings.
 .claude/settings.local.json
+*.tmp.*
