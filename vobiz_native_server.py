@@ -3615,6 +3615,12 @@ class CallSession:
         # as asking for the team.
         if _PERSON_RX.search(last):
             return True
+        # A yes-word leading into a QUESTION is the caller moving on, not
+        # consent: "సరేనండి, ప్యాచెస్ ఆన్లైన్ ఆఫ్లైన్?" was transferred on a
+        # real SR call (2026-10-18) without hearing the answer.
+        rest = re.sub(r"^\W*((ఆఁ|ఆ|హా|ఓకే|సరే|సరేనండి|అలాగే|అవును|అవునండి|ok|okay)[\s.,!]*)+", "", last, flags=re.I)
+        if "?" in last or (rest and _TOPIC_ASK_RX.search(rest)):
+            return False
         # The offer counts from one turn further back when the turn between
         # was only us answering THEIR question: a real caller (2026-10-17)
         # said "ఓకే అండి, శాలరీ ఎంత?", got the salary, said "సరేనండి." --
@@ -4157,6 +4163,15 @@ class CallSession:
                         continue
                     if say and not self._legacy_engine and say.endswith("?") and _BAD_QUESTION_RX.search(say):
                         log.info("dropped a bookish / role-swapped question: %r", say)
+                        continue
+                    prev_bot = next((m["content"] for m in reversed(self.messages[:-1])
+                                     if m["role"] == "assistant"), "") or ""
+                    if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
+                            and _CONNECT_OFFER_RX.search(prev_bot) and not self._interest_now()):
+                        # Never the offer twice in a row: a half-said "అంటే..."
+                        # got the same offer again on SR (2026-10-18), using
+                        # up the second offer in nine seconds.
+                        log.info("dropped a back-to-back repeat of the connect offer: %r", say)
                         continue
                     if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
                             and self._question_after_offer()):
