@@ -132,6 +132,7 @@ def report_call(
     language: str | None = None,
     captured_data: dict[str, Any] | None = None,
     recording_base64: str | None = None,
+    sentiment: str | None = None,
 ) -> None:
     """Send one finished call. Never raises."""
     payload = {
@@ -153,6 +154,10 @@ def report_call(
         # Caller-side audio only, base64 WAV -- lets a call actually be
         # listened to, not just read as a transcript.
         "recording_base64": recording_base64,
+        # positive / neutral / negative, judged by the call-end extraction
+        # from the whole conversation (2026-10-18) -- fills the dashboard's
+        # Sentiment column, which had shown dashes since launch.
+        "sentiment": sentiment,
     }
 
     _send(payload)

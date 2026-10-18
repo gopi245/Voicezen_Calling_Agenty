@@ -4632,6 +4632,7 @@ class CallSession:
         summary = None
         caller_name = None
         captured_data = None
+        sentiment = None
         if transcript.strip() and (self.client or {}).get("client_id") == "sr_electrical":
             # SR Electrical: the student's details for the admission team.
             try:
@@ -4652,6 +4653,8 @@ class CallSession:
                             '  "start_when": when they said they can start the training, in English, else null\n'
                             '  "call_result": one short English sentence on how the call ended\n'
                             '  "lead_status": one of "Interested", "Follow-up", "Not interested"\n'
+                            '  "sentiment": one of "positive", "neutral", "negative" -- the caller\'s mood '
+                            "and interest by the end of the call\n"
                             '  "summary": a summary for the admission team, in English, at most four '
                             "sentences -- what the student asked, their details, and the outcome."
                         )},
@@ -4661,6 +4664,8 @@ class CallSession:
                 parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
                 caller_name = parsed.get("student_name") or None
                 summary = parsed.get("summary") or None
+                if parsed.get("sentiment") in ("positive", "neutral", "negative"):
+                    sentiment = parsed["sentiment"]
                 captured_data = {
                     "extracted_variables": {
                         "student_name": caller_name,
@@ -4726,7 +4731,9 @@ class CallSession:
                             "change their address, else false\n"
                             '  "interested_in_magazine": true if the caller asked about the '
                             "magazine, its plans or prices, or said they want it -- even if "
-                            "they gave no address -- else false"
+                            "they gave no address -- else false\n"
+                            '  "sentiment": one of "positive", "neutral", "negative" -- the '
+                            "caller's mood and interest by the end of the call"
                         )},
                         {"role": "user", "content": transcript[:12000]},
                     ],
@@ -4734,6 +4741,8 @@ class CallSession:
                 parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
                 caller_name = parsed.get("caller_name") or None
                 summary = parsed.get("summary") or None
+                if parsed.get("sentiment") in ("positive", "neutral", "negative"):
+                    sentiment = parsed["sentiment"]
 
                 plan = parsed.get("subscription_plan") or None
                 has_address = any(parsed.get(k) for k in ("house_number", "street_name", "city", "district", "pincode"))
@@ -4788,6 +4797,7 @@ class CallSession:
                 language="te-IN",
                 recording_base64=recording_b64,
                 captured_data=captured_data,
+                sentiment=sentiment,
             )
         except Exception:
             log.exception("call report failed")
