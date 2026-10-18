@@ -283,7 +283,8 @@ _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|
 # "Anything else?" endings in every phrasing the model keeps inventing --
 # banned in the scripts, enforced here: a real call (2026-10-17) ended three
 # answers with "ఇంకా ఏదైనా తెలుసుకోవాలా?" despite the written ban.
-_ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|और कुछ|कुछ और", re.I)
+_ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|"
+                               r"और कुछ|कुछ और|कोई और सवाल|और कोई सवाल|कोई और प्रश्न", re.I)
 # Words that read as a date or day: a caller answering our connect offer with
 # "October 20th ని" is answering the EARLIER joining-date question, not the
 # offer (a real call, 2026-10-17, met that date with a transfer attempt).
