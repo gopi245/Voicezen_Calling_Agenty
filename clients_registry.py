@@ -35,23 +35,29 @@ CLIENTS: dict[str, dict] = {
             else None
         ),
         "dial_from": "+918071580257",
-        # INBOUND calls hear the Hindi real-estate demo (owner's request,
-        # 2026-10-15). Outbound website-lead callbacks and dashboard demo
-        # calls still run VoiceZen's own Telugu pitch -- server.py forces
-        # Telugu settings on those paths regardless of this entry.
-        "prompt_module": "script_realestate_hi",
+        # INBOUND calls hear the Vedantha Vanam sandalwood-farmland script
+        # (owner's request, 2026-10-18; replaced the Hindi real-estate demo,
+        # script_realestate_hi, which stays in agent/ for rollback).
+        # Outbound website-lead callbacks and dashboard demo calls still run
+        # VoiceZen's own Telugu pitch -- server.py forces Telugu settings on
+        # those paths regardless of this entry.
+        "prompt_module": "script_vedantha_vanam",
         # A faint office behind the whole call. Re-enabled 2026-10-15 after
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
         "background_noise": "low",
-        # Hindi only for the inbound real-estate demo; mixed English words
-        # are understood (hi-IN).
-        "stt_language": "hi-IN",
-        "tts_language": "hi",
-        # Slower than normal -- 1.0 sounded fast on a real call, 0.9 still
-        # a touch quick, 0.8 too slow; 0.85 is the owner's pick (2026-10-15).
-        "tts_speed": 0.85,
-        "reply_language": "Hindi",
+        # Telugu only, like SR Electrical. The Hindi demo's tts_speed 0.85
+        # was tuned for the Hindi voice and is dropped -- re-tune on a call.
+        "stt_language": "te-IN",
+        "tts_language": "te",
+        "reply_language": "Telugu",
+        "tts_provider": "raya",
+        # Speech-recognition hints: the words callers say about the project.
+        "stt_prompt": (
+            "వేదాంత వనం, శ్రీగంధం, ఫామ్‌ల్యాండ్, ప్లాట్, సెంట్లు, సెంటు, గజం, ఎకరం, లక్షలు, "
+            "సైట్ విజిట్, లొకేషన్, సంతమాగులూరు, బాపట్ల, నరసరావుపేట, కోటప్పకొండ, జె ఎన్ టి యు, "
+            "రిజిస్ట్రేషన్, డాక్యుమెంట్స్, ఆదాయం, పెట్టుబడి, ఆలోచించి చెబుతాను, ఆదివారం"
+        ),
         "repeat_guard": True,
         "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
