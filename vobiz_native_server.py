@@ -3372,6 +3372,19 @@ class CallSession:
     async def _answer_turn(self, text: str, transcript_at: float,
                            speech_seen_at: float | None, turn: dict | None):
         self.messages.append({"role": "user", "content": text})
+        if not self._legacy_engine and self._after_closing_line(text):
+            # The visit is booked and the closing line was said: thanks / OK /
+            # bye now ends the call in one short line. A real call (2026-10-18)
+            # answered "థాంక్స్ అండి థాంక్స్" with an invented speech, then the
+            # not-interested goodbye three times.
+            bye = (self.client or {}).get("final_bye") or "ధన్యవాదాలు అండి, నమస్కారం!"
+            self.messages.append({"role": "assistant", "content": bye})
+            log.info("bot: %s  [END_CALL] (caller closed after our closing line)", bye)
+            self._speak_task = asyncio.create_task(self._speak(bye, end_call=True, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         # Streaming first: it starts speaking the opening sentence while
         # the model is still writing, which is where most of the old
         # 2.2-2.6s silence went. Falls back to waiting for the whole
@@ -3636,6 +3649,36 @@ class CallSession:
                      if self.messages[i]["role"] == "assistant"), "") or ""
         return bool(re.search(r"చేరాలనుకుంటున్నారా|చేరడానికి సిద్ధ|ప్రారంభించాలనుకుంటున్నారా|"
                               r"జాయిన్ అవ్వాలనుకుంటున్నారా|జాయిన్ అవుతారా|చేరతారా", prev))
+
+    def _after_closing_line(self, text: str) -> bool:
+        """Clients with "closing_phrase": our last reply was the booked-call
+        closing line and the caller now only thanks, acknowledges or says bye
+        (no question) -- the call is over."""
+        closing = (self.client or {}).get("closing_phrase")
+        if not closing:
+            return False
+        prev = next((m["content"] for m in reversed(self.messages[:-1]) if m["role"] == "assistant"), "") or ""
+        if re.sub(r"[‌‍]", "", closing) not in re.sub(r"[‌‍]", "", prev):
+            return False
+        t = (text or "").strip()
+        if not t or "?" in t:
+            return False
+        return _caller_said_goodbye(t) or len(_words(t)) <= 4
+
+    def _caller_leaving_now(self) -> bool:
+        """The caller's latest words sound like leaving without a visit: "ఓకే",
+        "సరే", "ఆలోచించి చెబుతాను", "తర్వాత చూస్తా" -- the only time a client's
+        persuade line ("persuade_markers") may be spoken."""
+        last = (self._last_caller_words() or "").strip()
+        if not last:
+            return False
+        if re.search(r"ఆలోచించ|తర్వాత|ఇప్పుడు కాదు|చూద్దాం|చూస్తా|చెప్తా|చెబుతా|ఇంట్రెస్ట్ లేదు|వద్దు", last):
+            return True
+        if re.search(r"చెప్పండి|చెప్పు|చెప్తారా", last):
+            # "ఆ చెప్పండి" asks us to go ON (it preceded the price on the
+            # real call), not a caller drifting off.
+            return False
+        return _is_backchannel(last) or (len(_words(last)) <= 3 and "?" not in last)
 
     def _ack_after_our_bye(self) -> bool:
         """The caller answered our spoken goodbye with a bare acknowledgement
@@ -4028,6 +4071,15 @@ class CallSession:
                         break
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
+                        continue
+                    persuade = (self.client or {}).get("persuade_markers") or ()
+                    if (say and not self._legacy_engine and not say.endswith("?")
+                            and any(re.sub(r"[‌‍]", "", p) in re.sub(r"[‌‍]", "", say) for p in persuade)
+                            and not self._caller_leaving_now()):
+                        # Vedantha Vanam's convince line is for a caller about
+                        # to leave; a real call (2026-10-18) tacked it onto the
+                        # price and repeated it in four replies in a row.
+                        log.info("dropped the persuade line -- the caller isn't leaving: %r", say)
                         continue
                     bye_cfg = (self.client or {}).get("goodbye_phrase")
                     if (say and not self._legacy_engine and bye_cfg

@@ -70,6 +70,13 @@ CLIENTS: dict[str, dict] = {
         # Background noise from the caller's side turns into short phrases;
         # while the bot is mid-sentence, under three words never stops it.
         "min_interrupt_words": 3,
+        # Once the booked-call closing line is said, thanks / OK / bye ends
+        # the call with final_bye -- no more model replies.
+        "closing_phrase": "సైట్ విజిట్ వివరాలు, లొకేషన్ మీకు ఈ నంబర్‌కి పంపిస్తామండి",
+        "final_bye": "ధన్యవాదాలు అండి, నమస్కారం!",
+        # Sentences of the client's convince line: spoken only when the caller
+        # is about to leave, never tacked onto a price or facilities answer.
+        "persuade_markers": ["పరిశీలించి నిర్ణయం", "అనుకూలమైన రోజున సైట్ విజిట్ ఏర్పాటు"],
         "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
