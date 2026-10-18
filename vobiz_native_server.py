@@ -275,6 +275,12 @@ _NO_INFO = {"Telugu": "సారీ అండి, ఆ సమాచారం మ�
 _CONNECT_ASK = {"Telugu": "ఆ వివరం మా టీమ్ చెప్పగలరండి. కనెక్ట్ చేయమంటారా?",
                 "English": "Our team can answer that. Shall I connect you to our team?",
                 "Hindi": "यह जानकारी हमारी टीम बता सकती है। क्या मैं आपको हमारी टीम से कनेक्ट कर दूँ?"}
+# The bare offer, for a swap when the caller asked NOTHING -- "ఆ వివరం మా
+# టీమ్ చెప్పగలరండి" after a plain "సరేనండి." read as a non-sequitur on a
+# real call (2026-10-18).
+_CONNECT_ASK_PLAIN = {"Telugu": "మా అడ్మిషన్ టీమ్‌కి కనెక్ట్ చేయమంటారా?",
+                      "English": "Shall I connect you to our team?",
+                      "Hindi": "क्या मैं आपको हमारी टीम से कनेक्ट कर दूँ?"}
 # The connect-to-the-team sentences in every builder language (Telugu,
 # English, Hindi — the wording set by scriptBuilder.ts TRANSFER_LINES), so
 # the offer limit, the "no is not a transfer" check and the question-back
@@ -4037,8 +4043,11 @@ class CallSession:
                         if topics and re.search(topics, lastc, re.I):
                             say = _NO_INFO.get(lang, _NO_INFO["Telugu"])
                         else:
-                            say = (_TEAM_WILL_CALL if self._offer_limit_reached() else _CONNECT_ASK).get(
-                                lang, _CONNECT_ASK["Telugu"])
+                            asked_something = lastc.rstrip().endswith("?") or re.search(
+                                r"ఎంత|ఎన్ని|ఎప్పుడు|ఎక్కడ|ఎలా|ఏంటి|చెప్పండి|ఉందా|ఉంటుందా|వస్తుందా|ఇస్తారా", lastc)
+                            ask = _CONNECT_ASK if asked_something else _CONNECT_ASK_PLAIN
+                            say = (_TEAM_WILL_CALL if self._offer_limit_reached() else ask).get(
+                                lang, ask["Telugu"])
                         log.info("replaced an unconsented transfer sentence with %r", say)
                         swapped_go = True
                     if say and _CONNECT_GO_RX.search(say) and self._transfer_declined_standing():
