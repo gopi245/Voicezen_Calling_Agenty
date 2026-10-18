@@ -2446,6 +2446,12 @@ def _looks_like_name(ans: str) -> bool:
     lead = re.match(r"^(\S+(?:\s\S+)?)\s*(అండి|గారు|,)\s+\S", ans)
     if lead and _looks_like_name(lead.group(1)):
         return True
+    if re.search(r"\?|ఇస్తార|ఇవ్వర|చేస్తార|చూపిస్త|జాబ్|ఫీజు|ప్లేస్|శాలరీ|సాలరీ|కదా|కదండి|ఎంత|ఎక్కడ|ఎప్పుడు|"
+                 r"ఉందా|ఉంటుందా|బీటెక్|డిప్లొమా|ఐటీఐ|B\.?Tech", ans, re.I):
+        # A question or a qualification is never a name: "జాబ్ ఇస్తారండి."
+        # was stored as the caller's name on a real SR call (2026-10-18)
+        # and the real name question was blocked three times after it.
+        return False
     ans = re.sub(r"\s*(అండి|గారు)?[.।]?$", "", ans)
     words = ans.split()
     if not 1 <= len(words) <= 2:
@@ -4175,6 +4181,14 @@ class CallSession:
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
                         continue
+                    if say and not self._legacy_engine:
+                        norm = lambda x: re.sub(r"[\s.,!?।‌‍]+", "", x or "")
+                        if norm(say) and norm(say) == norm(self._last_caller_words()):
+                            # Parroting the caller ("జాబ్ ఇస్తారండి." back to
+                            # their own question, SR 2026-10-18) sounds like a
+                            # yes they never got.
+                            log.info("dropped a reply that only repeats the caller: %r", say)
+                            continue
                     if say and not self._legacy_engine and say.endswith("?") and _BAD_QUESTION_RX.search(say):
                         log.info("dropped a bookish / role-swapped question: %r", say)
                         continue

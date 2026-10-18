@@ -123,8 +123,11 @@ CLIENTS: dict[str, dict] = {
         # First match wins; order matters (other branches before plain EEE).
         "qualification_lines": [
             (r"(బీటెక్|బి\.? ?టెక్|b\.? ?tech|డిప్లొమా|డిప్లమా|diploma|ఐటీఐ|ITI).{0,25}"
-             r"(మెకానికల్|mechanical|సివిల్|civil|సీఎస్ఈ|CSE|కంప్యూటర్|computer|ఈసీఈ|ECE|ఐటీ |ఫిట్టర్|fitter|వెల్డర్|welder|"
-             r"ఆటోమొబైల్|automobile|కెమికల్|chemical)",
+             # Spoken branch forms too: "బీటెక్ ఈసీ" (ECE) fell through to the
+             # EEE fee and a placement promise on a real call (2026-10-18).
+             r"(మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|సీఎస్|CSE|కంప్యూటర్|computer|"
+             r"ఈసీఈ|ఈ సీ ఈ|ఈసీ|ఈ సీ|ECE|\bEC\b|ఐటీ |ఐ టీ|\bIT\b|ఫిట్టర్|fitter|వెల్డర్|welder|"
+             r"ఆటోమొబైల్|automobile|కెమికల్|chemical|ఏరోనాటికల్|బయోటెక్|బయో టెక్)",
              "మీరు కూడా జాయిన్ అవ్వొచ్చండి. ప్రాక్టికల్స్ కోర్సు ఫీజు పదిహేను వేల రూపాయలు, ఫార్టీ ఫైవ్ డేస్, సర్టిఫికేట్ ఇస్తామండి."),
             (r"ఐటీఐ|ITI|ఐ టి ఐ",
              "ఐటీఐ వాళ్ళకి ఫీజు పదిహేడు వేల రూపాయలండి, కోర్సు ఫార్టీ ఫైవ్ డేస్, హండ్రెడ్ పర్సెంట్ జాబ్ ప్లేస్‌మెంట్ కూడా ఉంటుంది."),
