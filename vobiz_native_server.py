@@ -3946,8 +3946,26 @@ class CallSession:
                         for m in self.messages)
         asked_qual = "చదివార" in next((m["content"] for m in reversed(self.messages)
                                        if m["role"] == "assistant"), "")
-        line = (next((ln for rx, ln in quals if re.search(rx, last, re.I)), None)
-                if (asked_qual or not fee_given) else None)
+        # Branch first (clients_registry "branch_ask"): a bare "డిప్లొమా" /
+        # "బీటెక్" got the EEE fee and a placement promise on a real SR call
+        # (2026-10-18) -- a civil-diploma student would hear the wrong fee.
+        ba = (self.client or {}).get("branch_ask")
+        qual_text = last
+        if ba and quals:
+            prev_bot = next((m["content"] for m in reversed(self.messages[:-1])
+                             if m["role"] == "assistant"), "") or ""
+            users = [m["content"] or "" for m in self.messages if m["role"] == "user"]
+            if ba["line"] in prev_bot and len(users) >= 2:
+                # Their branch answer ("ఈఈఈ", "సివిల్") read together with the
+                # qualification they gave just before.
+                qual_text = users[-2] + " " + last
+            elif ((asked_qual or not fee_given) and re.search(ba["needs"], last, re.I)
+                  and not re.search(ba["given"], last, re.I)):
+                return [{"role": "system", "content": (
+                    f"They named their qualification but not the branch. Say ONLY this, word for word: "
+                    f"\"{ba['line']}\" -- no fee, no other detail yet.")}]
+        line = (next((ln for rx, ln in quals if re.search(rx, qual_text, re.I)), None)
+                if (asked_qual or not fee_given or qual_text != last) else None)
         if line:
             # The fee is picked here from what they studied, never by the
             # model: a test replay quoted the B.Tech fee to an ITI student.

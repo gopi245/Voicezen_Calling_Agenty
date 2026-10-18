@@ -117,6 +117,15 @@ CLIENTS: dict[str, dict] = {
             "వద్దండి, వద్దు, అబ్బే, అవును, కనెక్ట్ చేయండి, జాబ్ ప్లేస్‌మెంట్ ఎక్కడ ఇస్తారు"
         ),
         # Live transfer target when the agent says [[TRANSFER]].
+        # A bare B.Tech/Diploma gets the branch question before any fee: a
+        # real call (2026-10-18) gave a plain "డిప్లొమా" the EEE fee.
+        "branch_ask": {
+            "needs": r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|డిప్లొమా|డిప్లమా|diploma|పాలిటెక్నిక్|polytechnic|ఇంజనీరింగ్|engineering",
+            "given": r"ఈఈఈ|ఈ ఈ ఈ|\bEEE\b|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
+                     r"సీఎస్|CSE|కంప్యూటర్|computer|ఈసీఈ|ఈ సీ ఈ|ఈసీ|ఈ సీ|ECE|\bEC\b|ఐటీ|ఐ టీ|\bIT\b|ఆటోమొబైల్|"
+                     r"automobile|కెమికల్|chemical|ఏరోనాటికల్|బయోటెక్|బయో టెక్|బ్రాంచ్",
+            "line": "ఏ బ్రాంచ్ అండి? ఈఈఈ నా, లేక వేరే బ్రాంచా?",
+        },
         # Spoken-text fixes: the model keeps writing ITI as "ఇటీవలి" (recent).
         # The I.E.M fee is chosen in code from what the student said they
         # studied -- the model once quoted the B.Tech fee to an ITI student.
@@ -199,7 +208,9 @@ CLIENTS: dict[str, dict] = {
         "transfer_topics": (
             r"హాస్టల్|hostel|రూమ్|ఫుడ్|భోజనం|ఈఎంఐ|EMI|ఇన్‌స్టాల్‌మెంట్|ఇన్స్టాల్మెంట్|డిస్కౌంట్|discount|తగ్గించ|తగ్గిస్తా|"
             r"గవర్నమెంట్|government|అప్రూవ్|approved|గుర్తింపు|"
-            r"లోన్|loan|ఏజ్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
+            # Not after ఫారెన్/ఫారిన్: "ఫారెన్ లోన్ ఇస్తారా?" was a misheard
+            # foreign-JOB question and got the no-info line (2026-10-18).
+            r"(?<!ఫారెన్ )(?<!ఫారిన్ )(?<!ఫారెన్)(?<!ఫారిన్)(?<!ఫారెన్‌)(?<!ఫారిన్‌)లోన్|(?<!foreign )loan|ఏజ్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
         ),
         # Tell the model which questions it has already asked twice.
         "repeat_guard": True,
