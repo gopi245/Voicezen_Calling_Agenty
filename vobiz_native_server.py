@@ -290,6 +290,7 @@ _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|
 # banned in the scripts, enforced here: a real call (2026-10-17) ended three
 # answers with "ఇంకా ఏదైనా తెలుసుకోవాలా?" despite the written ban.
 _ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|"
+                               r"ప్రత్యేకంగా తెలుసుకోవాల|తెలుసుకోవాలనుకుంటున్నార|"
                                r"और कुछ|कुछ और|कोई और सवाल|और कोई सवाल|कोई और प्रश्न", re.I)
 # Words that read as a date or day: a caller answering our connect offer with
 # "October 20th ని" is answering the EARLIER joining-date question, not the
@@ -4358,6 +4359,35 @@ class CallSession:
                 await queue.put(None)
                 raise
             log.exception("stream broke mid-reply -- ending the turn with what was said")
+
+        if (spoken_any and interest_now and not go_now and not asked
+                and not any(_CONNECT_OFFER_RX.search(s) or _CONNECT_GO_RX.search(s) for s in said)):
+            # Interest shown, but the reply asked nothing: the offer is added
+            # after it. "ఇంకా డాక్యుమెంట్స్ కావాలండి జాయిన్ అవ్వాలంటే" got the
+            # documents answer and no offer on a real SR call (2026-10-18).
+            lang_i = (self.client or {}).get("reply_language") or "Telugu"
+            offer_i = _CONNECT_ASK_PLAIN.get(lang_i, _CONNECT_ASK_PLAIN["Telugu"])
+            said.append(offer_i)
+            await queue.put(offer_i)
+            full = " ".join(said)
+            log.info("added the connect offer after the answer -- the caller showed interest")
+
+        if (not spoken_any and full.strip() and not self._legacy_engine
+                and (self.client or {}).get("final_offer") and not getattr(self, "_final_offer_made", False)
+                and not self._transfer_declined_standing() and not self._transfer_requested
+                and any(m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
+                        for m in self.messages)):
+            # Every sentence was dropped (a goodbye on a bare "సరే అండి") for a
+            # student who was offered and never said no: the final offer
+            # instead of a bare "సరేనండి." -- a real SR call (2026-10-18)
+            # answered three "ఓకే"s with "సరేనండి." and never offered again.
+            self._final_offer_made = True
+            offer_f = self.client["final_offer"]
+            spoken_any = True
+            said.append(offer_f)
+            full = offer_f
+            await queue.put(offer_f)
+            log.info("every sentence was dropped -- made the final offer instead")
 
         if not spoken_any and full.strip() and not self._legacy_engine:
             # The repeat guard can drop a reply's ONLY sentence (a question
