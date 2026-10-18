@@ -558,6 +558,12 @@ _END_CHECK = {"Telugu": "సరేనండి, ఇంకేమైనా సం�
 
 # A reply opening on a bare yes, and a caller question that can't take one.
 _LEADING_YES_RX = re.compile(r"^\s*(అవునండి|అవును)[,.!\s]+")
+# A job / placement question or the "mine is B.Tech too" objection.
+_PLACEMENT_ASK_RX = re.compile(r"జాబ్|ప్లేస్మెంట్|ప్లేస్‌మెంట్|ప్లేస్మెంటు|ఉద్యోగ|job|placement|"
+                               r"(బీటెక్|డిప్లొమా|డిప్లమా|ఐటీఐ)\S*\s*(ఏ|కే|ే)?\s*(కదా|కదండి|కదండీ)", re.I)
+# A placement promise -- never for a practicals-track student.
+_PLACEMENT_PROMISE_RX = re.compile(r"(హండ్రెడ్ పర్సెంట్|వంద శాతం|100\s?%).{0,60}(ప్లేస్‌మెంట్|ప్లేస్మెంట్|జాబ్)", re.I)
+
 _RESTRICTION_RX = re.compile(r"మాత్రమే|లేదండి|లేదు|ఉండదు|ఉండదండి|లేవు|లేవండి|కాదు|కాదండి|only\b", re.I)
 _WH_QUESTION_RX = re.compile(r"ఎక్కడ|ఎంత|ఎప్పుడు|ఎలా|ఎవరు|ఏంటి|ఏమిటి|ఎన్ని|ఏ కంపెనీ|where|how much|when", re.I)
 
@@ -3442,6 +3448,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        objection = None if self._legacy_engine else self._placement_objection_reply(text)
+        if objection:
+            self.messages.append({"role": "assistant", "content": objection})
+            log.info("bot: %s  (placement objection #%d)", objection, self._objection_count)
+            self._speak_task = asyncio.create_task(self._speak(objection, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         end_step = None if self._legacy_engine else self._end_check_step(text)
         if end_step:
             # A bare "సరే"/"ఓకే" after a goodbye-type line: ask whether to end
@@ -3783,6 +3798,58 @@ class CallSession:
         return any(m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
                    for m in self.messages)
 
+    def _student_profile(self) -> tuple[str | None, str | None]:
+        """What the call already settled about the student, read from the
+        history so it survives every model turn: their track ("practicals" /
+        "placement", from the fee line spoken) and the branch they said (a
+        correction like "నాది సివిల్ కాదు" is never taken as their branch).
+        A real SR call (2026-10-18) re-asked a known branch and finally
+        promised placement to a mechanical student, because nothing held
+        these facts between replies."""
+        said = [m["content"] or "" for m in self.messages if m["role"] == "assistant"]
+        placement = any("వాళ్ళకి ఫీజు" in a for a in said)
+        practicals = any("ప్రాక్టికల్స్ కోర్సు ఫీజు" in a for a in said) and not placement
+        track = "practicals" if practicals else ("placement" if placement else None)
+        branch = None
+        ba = (self.client or {}).get("branch_ask")
+        if ba:
+            for m in self.messages:
+                if m["role"] != "user" or re.search(r"కాదు|కాదండి|కాద", m["content"] or ""):
+                    continue
+                hit = re.search(ba["given"], m["content"] or "", re.I)
+                if hit and hit.group(0) != "బ్రాంచ్":
+                    branch = hit.group(0)
+        return track, branch
+
+    def _placement_objection_reply(self, text: str) -> str | None:
+        """A practicals-track student asking about a job/placement, or
+        objecting "నాది కూడా బీటెక్ కదా": fixed, escalating answers instead
+        of the model repeating one speech -- or contradicting it. 1st: the
+        branch explanation; 2nd: acknowledge + hand the concern to the team
+        (the connect offer); 3rd on: a short no plus the end check."""
+        if not (self.client or {}).get("branch_ask"):
+            return None
+        track, branch = self._student_profile()
+        t = (text or "").strip()
+        if track != "practicals" or not t or re.search(r"ఫారెన్|ఫారిన్|foreign|abroad|విదేశ|శాలరీ|సాలరీ|జీతం", t, re.I):
+            return None
+        if not _PLACEMENT_ASK_RX.search(t):
+            return None
+        n = getattr(self, "_objection_count", 0) + 1
+        self._objection_count = n
+        b = f"{branch} " if branch else ""
+        if n == 1:
+            return (f"మీది {b}బ్రాంచ్ కదండి. " if branch else "") + (
+                "హండ్రెడ్ పర్సెంట్ ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. మీకు ప్రాక్టికల్స్ కోర్సు, "
+                "సర్టిఫికేట్, కాంట్రాక్ట్ బేసిస్ జాబ్స్‌లో హెల్ప్ ఉంటుందండి.")
+        if n == 2:
+            tail = ("ఈ విషయం మా అడ్మిషన్ టీమ్ ఇంకా వివరంగా చెప్తారండి. కనెక్ట్ చేయమంటారా?"
+                    if not self._transfer_declined_standing() else "ఇంకా వివరాలు మా టీమ్ కాల్ చేసి చెప్తారండి.")
+            return (f"అర్థమైందండి. కానీ ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమే, {b}బ్రాంచ్ వాళ్ళకి "
+                    f"కాంట్రాక్ట్ జాబ్స్‌లో హెల్ప్ చేస్తామండి. {tail}")
+        return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
+                + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
+
     def _end_check_step(self, text: str) -> str | None:
         """"ask" when the caller says a bare సరే/ఓకే right after a goodbye-type
         line of ours; "close" when they say it right after the end-check
@@ -3791,7 +3858,7 @@ class CallSession:
             return None
         prev = next((m["content"] for m in reversed(self.messages[:-1])
                      if m["role"] == "assistant"), "") or ""
-        if _END_CHECK["Telugu"] in prev or any(v in prev for v in _END_CHECK.values()):
+        if ("కాల్ ముగించమంటారా" in prev or "shall I end the call" in prev or "कॉल खत्म करूँ" in prev):
             return "close"
         fo = (self.client or {}).get("final_offer") or ""
         if (prev.strip() in ("సరేనండి.", "సరేనండి") or "ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి" in prev
@@ -3966,7 +4033,7 @@ class CallSession:
                 # between (the 14:54 replay).
                 qual_text = earlier_qual + " " + last
             elif ((asked_qual or not fee_given) and re.search(ba["needs"], last, re.I)
-                  and not re.search(ba["given"], last, re.I)):
+                  and not re.search(ba["given"], last, re.I) and not self._student_profile()[1]):
                 return [{"role": "system", "content": (
                     f"They named their qualification but not the branch. Say ONLY this, word for word: "
                     f"\"{ba['line']}\" -- no fee, no other detail yet.")}]
@@ -4034,6 +4101,16 @@ class CallSession:
                 known.append(f"their name ({ans.rstrip('.')})")
             elif "ఎప్పటి నుంచి" in pq or "कब आ सकते" in pq or "कब आ सकती" in pq:
                 known.append(f"when they can start / visit ({ans.rstrip('.')})")
+        if (self.client or {}).get("branch_ask"):
+            track_k, branch_k = self._student_profile()
+            if branch_k:
+                # The branch is settled once said: a real call (2026-10-18)
+                # asked "ఏ బ్రాంచండి?" again after "మెకానికల్".
+                known.append(f"their branch ({branch_k})")
+            if track_k == "practicals":
+                notes.append({"role": "system", "content": (
+                    "This student is on the PRACTICALS course (not EEE): NEVER say they get placement or a job "
+                    "guarantee, in any wording.")})
         if known:
             # A real call (2026-10-15) asked the name again after the caller
             # switched courses; once answered, these never come back.
@@ -4321,6 +4398,15 @@ class CallSession:
                         if not stripped:
                             continue  # the sentence was only "అవునండి."
                         say = stripped
+                    if (say and not self._legacy_engine and (self.client or {}).get("branch_ask")
+                            and _PLACEMENT_PROMISE_RX.search(say) and "మాత్రమే" not in say
+                            and self._student_profile()[0] == "practicals"):
+                        # A practicals-track student is never promised
+                        # placement: "బీటెక్ మెకానికల్ అయినా... హండ్రెడ్ పర్సెంట్
+                        # జాబ్ ప్లేస్‌మెంట్ ఇస్తాం" was said on a real SR call
+                        # (2026-10-18), contradicting the answer before it.
+                        log.info("dropped a placement promise to a practicals student: %r", say)
+                        continue
                     for rx, rep in ((self.client or {}).get("sentence_fixes") or ()):
                         # A known-false sentence swapped for the true one before
                         # it is spoken (clients_registry "sentence_fixes"): SR
