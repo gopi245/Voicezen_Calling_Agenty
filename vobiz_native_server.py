@@ -3955,7 +3955,10 @@ class CallSession:
             prev_bot = next((m["content"] for m in reversed(self.messages[:-1])
                              if m["role"] == "assistant"), "") or ""
             users = [m["content"] or "" for m in self.messages if m["role"] == "user"]
-            if ba["line"] in prev_bot and len(users) >= 2:
+            # Any branch question counts -- the model shortens the line ("ఏ
+            # బ్రాంచండి?"), and an exact match missed the fee on a demo.
+            if (ba["line"] in prev_bot or ("బ్రాంచ" in prev_bot and prev_bot.rstrip().endswith("?"))) \
+                    and len(users) >= 2:
                 # Their branch answer ("ఈఈఈ", "సివిల్") read together with the
                 # qualification they gave just before.
                 qual_text = users[-2] + " " + last
