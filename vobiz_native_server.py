@@ -535,6 +535,13 @@ _BACKCHANNEL_WORDS = {
 
 _FILLER_WORDS = {"hmm", "hm", "hmmm", "mm", "mhm", "హ్మ్", "హ్మ్మ్", "ఊ"}
 
+# A bare "go on" -- "చెప్పండి", "ఆ చెప్పండి", "చెప్పండి సార్".
+_GO_AHEAD_RX = re.compile(r"[\s.,!।]*(ఆ|హా|ఓకే)?[\s.,!।]*(చెప్పండి|చెప్పు)[\s.,!।]*(సార్|అండి|మేడం)?[\s.,!।]*")
+
+# A call-back goodbye the model writes on its own ("థ్యాంక్యూ అండి, ఏమైనా
+# కావాలంటే ఈ నంబర్‌కి కాల్ చేయండి."): only spoken once the caller says bye.
+_CALLBACK_BYE_RX = re.compile(r"ఏమైనా కావాలంటే.{0,30}కాల్ చేయండి")
+
 
 def _words(text: str) -> list[str]:
     return re.sub(r"[.,!?" + chr(0x0964) + r"]", " ", text.lower()).split()
@@ -3171,6 +3178,12 @@ class CallSession:
             ot = self._open_turn
             generating = ot is not None and ot["task"] is not None and not ot["task"].done()
             talking_left = self._line_free_at - time.time()
+            if generating and _GO_AHEAD_RX.fullmatch(text):
+                # "చెప్పండి" said just after the caller's own question, while
+                # the answer is already being prepared: it adds nothing, and
+                # re-answering repeated the batch timings on SR (2026-10-18).
+                log.info("ignored %r: go-ahead while the answer is already coming", text)
+                return
             if _is_filler(text) and (waiting or generating or talking_left > 0):
                 # "హ్మ్" is never an answer, even at the end of a question.
                 if waiting:
@@ -4081,6 +4094,13 @@ class CallSession:
                         # price and repeated it in four replies in a row.
                         log.info("dropped the persuade line -- the caller isn't leaving: %r", say)
                         continue
+                    if (say and not self._legacy_engine and _CALLBACK_BYE_RX.search(say)
+                            and not (_caller_said_goodbye(self._last_caller_words()) or self._ack_after_our_bye())):
+                        # SR (2026-10-18): a bare "ఆ."/"ఓకే." got this goodbye
+                        # twice while the student was still asking questions.
+                        log.info("dropped a call-back goodbye -- the caller didn't say goodbye: %r", say)
+                        dropped_goodbye = True
+                        continue
                     bye_cfg = (self.client or {}).get("goodbye_phrase")
                     if (say and not self._legacy_engine and bye_cfg
                             and (bye_cfg in say or re.search(r"(^|\s)బై[!.\s]*$", say))
@@ -4276,9 +4296,13 @@ class CallSession:
                  "  [TRANSFER]" if transfer else "  [END_CALL]" if end_call else "")
         # None means "no more sentences"; the speaker hangs up (or transfers)
         # after it if the reply asked for that.
-        if end_call and not transfer and not self._legacy_engine:
+        if end_call and not self._legacy_engine:
             # VOICEZEN TEST -- a real call (2026-10-13) talked over the goodbye
-            # twice, so the call never hung up and ran on confused.
+            # twice, so the call never hung up and ran on confused. The
+            # transfer sentence is locked the same way: on SR (2026-10-18) a
+            # caller's "ఓకే" over "లైన్‌లో ఉండండి" was taken as a barge-in,
+            # cancelled the transfer twice, and an agreed student was never
+            # connected.
             self._ending = True
         await queue.put(("TRANSFER",) if transfer else ("END_CALL",) if end_call else None)
 
