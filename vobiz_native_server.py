@@ -324,6 +324,10 @@ _INTEREST_RX = re.compile(
     r"రిజిస్ట్రేషన్ చేసుకోవాల|రిజిస్ట్రేషన్ చేయాల|రిజిస్ట్రేషన్ చేసుకుంటా|అడ్మిషన్ కావాల|interested|want to join", re.I)
 
 
+# A caller asking about a course topic, question mark or not.
+_TOPIC_ASK_RX = re.compile(r"ప్లేస్మెంట్|ప్లేస్‌మెంట్|శాలరీ|సాలరీ|జీతం|ఫీజు|టైమింగ్|బ్యాచ్|ఆన్\s?‌?లైన్|ఆఫ్\s?‌?లైన్|"
+                           r"అడ్రస్|సర్టిఫికేట్|ప్రాక్టికల్|ఎక్కడ|ఎంత|ఎన్ని|ఎప్పుడు|ఎలా", re.I)
+
 _BATCH_PICK_RX = re.compile(r"(మార్నింగ్|ఈవినింగ్|ఈవెనింగ్|ఆఫ్టర్నూన్|ఉదయం|సాయంత్రం|మధ్యాహ్నం|morning|evening|afternoon)\s?బ్యాచ్|"
                             r"(morning|evening|afternoon) batch|"
                             # "ఆన్లైన్ ఈవెనింగ్ అండి" -- a pick with no "బ్యాచ్" (2026-10-18)
@@ -3896,6 +3900,14 @@ class CallSession:
                     "no salary range exists for them -- NEVER say any figure. Say word for word: "
                     "\"ప్రాక్టికల్స్ కోర్సుకి మా వైపు నుంచి ఫిక్స్‌డ్ సాలరీ ఉండదండి. కాంట్రాక్ట్ బేసిస్ జాబ్స్‌లో సాలరీ పని బట్టి "
                     "మారుతుందండి.\" then ask your next flow question.")})
+        if ((self.client or {}).get("transfer_to") and _TOPIC_ASK_RX.search(last)
+                and not _ASSENT_RX.match(last) and not _DECLINE_RX.match(last)):
+            # The recogniser drops question marks: "ప్లేస్మెంట్స్ ఇస్తారండి."
+            # was a question on a real SR call (2026-10-18), the model jumped
+            # to the transfer sentence, and the caller had to ask again.
+            notes.append({"role": "system", "content": (
+                "The caller just ASKED about a course topic (even without a question mark). Answer it from the "
+                "facts in one or two sentences FIRST. Do NOT say the transfer sentence in this reply.")})
         known = []
         for i, m in enumerate(self.messages[:-1]):
             if m["role"] != "assistant":
