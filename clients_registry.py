@@ -199,6 +199,9 @@ CLIENTS: dict[str, dict] = {
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
+        # Background noise ("ఎలా అయిందో", 2026-10-18) cut the batch answer:
+        # under three words never stops the bot mid-sentence.
+        "min_interrupt_words": 3,
         # Sentences that must never be spoken, swapped for the true line
         # (regex, replacement). Online batches exist -- a real call
         # (2026-10-18) said they don't and the student hung up.

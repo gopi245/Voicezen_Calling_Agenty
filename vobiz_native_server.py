@@ -538,6 +538,10 @@ _FILLER_WORDS = {"hmm", "hm", "hmmm", "mm", "mhm", "హ్మ్", "హ్మ్
 # A bare "go on" -- "చెప్పండి", "ఆ చెప్పండి", "చెప్పండి సార్".
 _GO_AHEAD_RX = re.compile(r"[\s.,!।]*(ఆ|హా|ఓకే)?[\s.,!।]*(చెప్పండి|చెప్పు)[\s.,!।]*(సార్|అండి|మేడం)?[\s.,!।]*")
 
+# A reply opening on a bare yes, and a caller question that can't take one.
+_LEADING_YES_RX = re.compile(r"^\s*(అవునండి|అవును)[,.!\s]+")
+_WH_QUESTION_RX = re.compile(r"ఎక్కడ|ఎంత|ఎప్పుడు|ఎలా|ఎవరు|ఏంటి|ఏమిటి|ఎన్ని|ఏ కంపెనీ|where|how much|when", re.I)
+
 # A call-back goodbye the model writes on its own ("థ్యాంక్యూ అండి, ఏమైనా
 # కావాలంటే ఈ నంబర్‌కి కాల్ చేయండి."): only spoken once the caller says bye.
 _CALLBACK_BYE_RX = re.compile(r"ఏమైనా కావాలంటే.{0,30}కాల్ చేయండి")
@@ -4085,6 +4089,16 @@ class CallSession:
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
                         continue
+                    if (say and not self._legacy_engine and _LEADING_YES_RX.match(say)
+                            and _WH_QUESTION_RX.search(self._last_caller_words() or "")):
+                        # "జాబ్ ఎక్కడ ఇస్తారు?" -> "అవునండి, ..." on two real SR
+                        # calls (2026-10-18), despite the script: a where /
+                        # how-much question has no yes to give.
+                        stripped = _LEADING_YES_RX.sub("", say, count=1).strip()
+                        log.info("dropped a leading yes before a wh-answer: %r", say)
+                        if not stripped:
+                            continue  # the sentence was only "అవునండి."
+                        say = stripped
                     for rx, rep in ((self.client or {}).get("sentence_fixes") or ()):
                         # A known-false sentence swapped for the true one before
                         # it is spoken (clients_registry "sentence_fixes"): SR
