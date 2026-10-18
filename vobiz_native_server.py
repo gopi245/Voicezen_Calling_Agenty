@@ -3506,7 +3506,7 @@ class CallSession:
         # ‌ read as two different questions on a real call (2026-10-17),
         # so the limit never tripped and the offer was spoken four times.
         key = re.sub(r"[\s?.!,।]+", " ", re.sub(r"[‌‍]", "", question)).strip()
-        limit = 4 if "చదివార" in key else 2
+        limit = self._repeat_limit(key)
         n = 0
         for m in self.messages:
             if m["role"] != "assistant":
@@ -3515,6 +3515,20 @@ class CallSession:
             if q.endswith("?") and re.sub(r"[\s?.!,।]+", " ", re.sub(r"[‌‍]", "", q)).strip() == key:
                 n += 1
         return n >= limit
+
+    def _repeat_limit(self, key: str) -> int:
+        """How many times repeat_guard lets this question be asked. The
+        qualification decides the I.E.M fee, so it gets four; a client can
+        raise others with clients_registry "repeat_limits" ({phrase: n}) --
+        Vedantha Vanam's site-visit day was capped at two on a real call
+        (2026-10-18), asked too early, and could never be asked again once
+        the caller was ready."""
+        if "చదివార" in key:
+            return 4
+        for phrase, n in ((self.client or {}).get("repeat_limits") or {}).items():
+            if re.sub(r"[‌‍]", "", phrase) in key:
+                return int(n)
+        return 2
 
     def _transfer_consented(self) -> bool:
         """A transfer may only happen when the caller clearly agreed: they
@@ -3686,7 +3700,7 @@ class CallSession:
         # The qualification decides the I.E.M fee -- without it the call can't
         # go anywhere -- so it may be asked (rephrased) more often. A real call
         # (2026-10-12) moved on to the name after two unanswered asks.
-        done = [q + "?" for q, n in counts.items() if n >= (4 if "చదివార" in q else 2)]
+        done = [q + "?" for q, n in counts.items() if n >= self._repeat_limit(q)]
         notes = []
         # A question the caller just asked gets answered before anything
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to

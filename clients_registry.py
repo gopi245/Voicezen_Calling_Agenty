@@ -64,6 +64,9 @@ CLIENTS: dict[str, dict] = {
             "రిజిస్ట్రేషన్, డాక్యుమెంట్స్, ఆదాయం, పెట్టుబడి, ఆలోచించి చెబుతాను, ఆదివారం"
         ),
         "repeat_guard": True,
+        # The site-visit day is the whole point of the call: up to four asks,
+        # not two (a real call hit the cap early and never booked a visit).
+        "repeat_limits": {"ఏ రోజు": 4},
         "multilingual": False,
         "vobiz_auth_id": os.getenv("VOBIZ_AUTH_ID", ""),
         "vobiz_auth_token": os.getenv("VOBIZ_AUTH_TOKEN", ""),
