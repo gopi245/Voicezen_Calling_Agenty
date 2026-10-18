@@ -46,12 +46,13 @@ CLIENTS: dict[str, dict] = {
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
         "background_noise": "low",
-        # Telugu only, like SR Electrical. The Hindi demo's tts_speed 0.85
-        # was tuned for the Hindi voice and is dropped -- re-tune on a call.
+        # Telugu only, like SR Electrical.
         "stt_language": "te-IN",
         "tts_language": "te",
         "reply_language": "Telugu",
         "tts_provider": "raya",
+        # A little faster than normal -- the owner's pick (2026-10-18).
+        "tts_speed": 1.1,
         # Speech-recognition hints: the words callers say about the project.
         "stt_prompt": (
             "వేదాంత వనం, శ్రీగంధం, ఫామ్‌ల్యాండ్, ప్లాట్, సెంట్లు, సెంటు, గజం, ఎకరం, లక్షలు, "
