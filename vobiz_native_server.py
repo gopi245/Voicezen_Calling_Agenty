@@ -2441,6 +2441,11 @@ def _looks_like_name(ans: str) -> bool:
     everyday word -- "ఇది కూల్ అవుతుంది" was taken for a caller's name on a
     real call (2026-10-15) and the real name was never collected."""
     ans = re.sub(r"^(నా పేరు|పేరు|నేను|my name is|నా నేమ్|మై నేమ్ ఈజ్|మై నేమ్)\s*", "", ans.strip(), flags=re.I)
+    # A name and then a question in one breath -- "గోపికృష్ణ అండి జాబ్ ఇవ్వరా?"
+    # on a real SR call (2026-10-18): the name was missed and asked again.
+    lead = re.match(r"^(\S+(?:\s\S+)?)\s*(అండి|గారు|,)\s+\S", ans)
+    if lead and _looks_like_name(lead.group(1)):
+        return True
     ans = re.sub(r"\s*(అండి|గారు)?[.।]?$", "", ans)
     words = ans.split()
     if not 1 <= len(words) <= 2:
@@ -3618,8 +3623,11 @@ class CallSession:
         # A yes-word leading into a QUESTION is the caller moving on, not
         # consent: "సరేనండి, ప్యాచెస్ ఆన్లైన్ ఆఫ్లైన్?" was transferred on a
         # real SR call (2026-10-18) without hearing the answer.
-        rest = re.sub(r"^\W*((ఆఁ|ఆ|హా|ఓకే|సరే|సరేనండి|అలాగే|అవును|అవునండి|ok|okay)[\s.,!]*)+", "", last, flags=re.I)
-        if "?" in last or (rest and _TOPIC_ASK_RX.search(rest)):
+        # Longest forms first, so "సరేనండి" isn't read as "సరే" + leftover "నండి".
+        rest = re.sub(r"^\W*((సరేనండి|ఓకేనండి|అలాగేనండి|అవునండి|ఆఁ|ఆ|హా|ఓకే|సరే|అలాగే|అవును|okay|ok)[\s.,!]*)+",
+                      "", last, flags=re.I)
+        rest = re.sub(r"^\W*(అండి|అండీ)\W*", "", rest).strip(" .,!।")
+        if "?" in last or (rest and (_TOPIC_ASK_RX.search(rest) or re.search(r"కదా|కదండి|కదండీ|కదూ|లేదా|ఇవ్వరా", rest))):
             return False
         # The offer counts from one turn further back when the turn between
         # was only us answering THEIR question: a real caller (2026-10-17)
@@ -3631,9 +3639,15 @@ class CallSession:
                  if m["role"] == "assistant"][:2]
         if not prevs:
             return False
-        offer_live = bool(_CONNECT_OFFER_RX.search(prevs[0])) or bool(
-            len(prevs) > 1 and _CONNECT_OFFER_RX.search(prevs[1])
-            and not prevs[0].rstrip().endswith("?"))
+        offer_now = bool(_CONNECT_OFFER_RX.search(prevs[0]))
+        offer_back = bool(len(prevs) > 1 and _CONNECT_OFFER_RX.search(prevs[1])
+                          and not prevs[0].rstrip().endswith("?"))
+        if offer_back and not offer_now and rest:
+            # One turn back, only a BARE yes counts ("సరేనండి.", "ఓకే."): "సరే
+            # అండి నాది డిప్లొమా కదా" -- still objecting -- was transferred on
+            # a real SR call (2026-10-18).
+            return False
+        offer_live = offer_now or offer_back
         # A filler ఆ/హా before a yes-word still consents: "ఆ చేయండి." was
         # rejected on a real call (2026-10-17) because the lone-ఆ rule only
         # looked at the first word.
