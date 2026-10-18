@@ -324,8 +324,11 @@ _INTEREST_RX = re.compile(
     r"రిజిస్ట్రేషన్ చేసుకోవాల|రిజిస్ట్రేషన్ చేయాల|రిజిస్ట్రేషన్ చేసుకుంటా|అడ్మిషన్ కావాల|interested|want to join", re.I)
 
 
-_BATCH_PICK_RX = re.compile(r"(మార్నింగ్|ఈవినింగ్|ఆఫ్టర్నూన్|ఉదయం|సాయంత్రం|మధ్యాహ్నం|morning|evening|afternoon)\s?బ్యాచ్|"
-                            r"(morning|evening|afternoon) batch", re.I)
+_BATCH_PICK_RX = re.compile(r"(మార్నింగ్|ఈవినింగ్|ఈవెనింగ్|ఆఫ్టర్నూన్|ఉదయం|సాయంత్రం|మధ్యాహ్నం|morning|evening|afternoon)\s?బ్యాచ్|"
+                            r"(morning|evening|afternoon) batch|"
+                            # "ఆన్లైన్ ఈవెనింగ్ అండి" -- a pick with no "బ్యాచ్" (2026-10-18)
+                            r"(ఆన్\s?‌?లైన్|ఆఫ్\s?‌?లైన్|online|offline)\s?(మార్నింగ్|ఈవినింగ్|ఈవెనింగ్|ఉదయం|సాయంత్రం|morning|evening)",
+                            re.I)
 
 
 def _really_declines(text: str) -> bool:
@@ -3399,6 +3402,21 @@ class CallSession:
     async def _answer_turn(self, text: str, transcript_at: float,
                            speech_seen_at: float | None, turn: dict | None):
         self.messages.append({"role": "user", "content": text})
+        if not self._legacy_engine and self._wants_final_offer(text):
+            # An interested caller (offered before, never said no) is leaving
+            # with a thanks/bye: one last connect offer instead of the
+            # goodbye, past the two-offer cap. A real SR call (2026-10-18)
+            # picked a batch, asked on, said "సరేనండి థ్యాంక్ యూ" and only got
+            # the goodbye.
+            self._final_offer_made = True
+            offer = (self.client or {}).get("final_offer")
+            self.messages.append({"role": "assistant", "content": offer})
+            log.info("bot: %s  (final offer before the caller leaves)", offer)
+            self._speak_task = asyncio.create_task(self._speak(offer, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         if not self._legacy_engine and self._after_closing_line(text):
             # The visit is booked and the closing line was said: thanks / OK /
             # bye now ends the call in one short line. A real call (2026-10-18)
@@ -3680,6 +3698,28 @@ class CallSession:
                      if self.messages[i]["role"] == "assistant"), "") or ""
         return bool(re.search(r"చేరాలనుకుంటున్నారా|చేరడానికి సిద్ధ|ప్రారంభించాలనుకుంటున్నారా|"
                               r"జాయిన్ అవ్వాలనుకుంటున్నారా|జాయిన్ అవుతారా|చేరతారా", prev))
+
+    def _wants_final_offer(self, text: str) -> bool:
+        """Clients with "final_offer" and transfer_to: the caller is saying
+        thanks/bye, was offered the team earlier, never declined it, and has
+        not had the final offer yet."""
+        client = self.client or {}
+        if not (client.get("final_offer") and client.get("transfer_to")):
+            return False
+        if getattr(self, "_final_offer_made", False) or self._transfer_requested:
+            return False
+        t = (text or "").strip()
+        if not t or "?" in t or not _caller_said_goodbye(t):
+            return False
+        # Its own no-check: _really_declines counts the bye-slang "ఉంటానండి"
+        # as a no but misses "ఇంట్రెస్ట్ లేదు".
+        if re.search(r"వద్ద|వొద్దు|అబ్బే|అక్కర్లేదు|అవసరం లేదు|ఇంట్రెస్ట్ లేదు|ఇంటరెస్ట్ లేదు|"
+                     r"not interested|\bno\b|నో\b", t, re.I):
+            return False
+        if self._transfer_declined_standing():
+            return False
+        return any(m["role"] == "assistant" and _CONNECT_OFFER_RX.search(m["content"] or "")
+                   for m in self.messages)
 
     def _after_closing_line(self, text: str) -> bool:
         """Clients with "closing_phrase": our last reply was the booked-call

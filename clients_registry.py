@@ -202,6 +202,9 @@ CLIENTS: dict[str, dict] = {
         # Background noise ("ఎలా అయిందో", 2026-10-18) cut the batch answer:
         # under three words never stops the bot mid-sentence.
         "min_interrupt_words": 3,
+        # An interested student (offered before, never said no) who says
+        # thanks/bye hears this once instead of the goodbye; a yes transfers.
+        "final_offer": "వెళ్ళే ముందు, జాయిన్ అవ్వడానికి మా అడ్మిషన్ టీమ్‌కి కనెక్ట్ చేయమంటారా అండి?",
         # Sentences that must never be spoken, swapped for the true line
         # (regex, replacement). Online batches exist -- a real call
         # (2026-10-18) said they don't and the student hung up.
