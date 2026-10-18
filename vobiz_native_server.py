@@ -550,6 +550,12 @@ _FILLER_WORDS = {"hmm", "hm", "hmmm", "mm", "mhm", "హ్మ్", "హ్మ్
 # A bare "go on" -- "చెప్పండి", "ఆ చెప్పండి", "చెప్పండి సార్".
 _GO_AHEAD_RX = re.compile(r"[\s.,!।]*(ఆ|హా|ఓకే)?[\s.,!।]*(చెప్పండి|చెప్పు)[\s.,!।]*(సార్|అండి|మేడం)?[\s.,!।]*")
 
+# Asked when the caller has only said "సరే"/"ఓకే" twice with nothing left to
+# say -- the call ends on their answer, never on a guess (owner, 2026-10-18).
+_END_CHECK = {"Telugu": "సరేనండి, ఇంకేమైనా సందేహం ఉందా, లేక కాల్ ముగించమంటారా?",
+              "English": "Alright, any other doubt, or shall I end the call?",
+              "Hindi": "ठीक है जी, कोई और सवाल है, या कॉल खत्म करूँ?"}
+
 # A reply opening on a bare yes, and a caller question that can't take one.
 _LEADING_YES_RX = re.compile(r"^\s*(అవునండి|అవును)[,.!\s]+")
 _WH_QUESTION_RX = re.compile(r"ఎక్కడ|ఎంత|ఎప్పుడు|ఎలా|ఎవరు|ఏంటి|ఏమిటి|ఎన్ని|ఏ కంపెనీ|where|how much|when", re.I)
@@ -639,6 +645,8 @@ _GOODBYE_PATTERN = re.compile(
         "బై", "బాయ్", "థాంక్", "థ్యాంక్", "ధన్యవాద", "ఉంటాను", r"ఉంటా(?=[\s.,!।]|$)", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
         "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ", "మళ్ళీ చేస్తా", "మళ్ళీ కాల్ చేస్తా",
         "ఉంటా మరి", "ఉంటానండి",
+        # The answer to _END_CHECK's "కాల్ ముగించమంటారా?" (2026-10-18).
+        "ముగించండి", "ముగించేయండి", "కట్ చేయండి", "కట్ చేస్తా", "ఏం లేదు", "ఏం లేదండి", "ఏమీ లేదు", "ఏమీ లేదండి", "సందేహం లేదు", "సందేహాలు లేవు",
     ]),
     re.IGNORECASE,
 )
@@ -4407,17 +4415,21 @@ class CallSession:
                 prev_said = next((m["content"] for m in reversed(self.messages[:-1])
                                   if m["role"] == "assistant"), "") or ""
                 fo = (self.client or {}).get("final_offer") or ""
-                if (_is_backchannel(self._last_caller_words() or "")
-                        and (prev_said.strip() == filler or (fo and fo in prev_said))):
-                    # A second bare "సరే"/"ఓకే" in a row, with nothing left to
-                    # say: the caller is done. Close politely and hang up
-                    # rather than loop "సరేనండి." -- a real SR call
-                    # (2026-10-18) went సరే/సరేనండి three times.
+                bare_ok = _is_backchannel(self._last_caller_words() or "")
+                if bare_ok and _END_CHECK["Telugu"] in prev_said:
+                    # They were asked whether to end the call and answered
+                    # with a bare "సరే"/"ఓకే": that is the yes to ending.
                     filler = {"Telugu": "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!",
                               "English": "Alright, call us anytime on this number. Thank you!",
                               "Hindi": "ठीक है जी, जब भी ज़रूरत हो इसी नंबर पर कॉल कीजिए। धन्यवाद!"}.get(
                         lang_f, "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!")
                     force_end = True
+                elif bare_ok and (prev_said.strip() == filler or (fo and fo in prev_said)):
+                    # A second bare "సరే"/"ఓకే" in a row with nothing left to
+                    # say: ASK whether they want to end -- never assume it
+                    # (owner's choice, 2026-10-18). A real SR call had gone
+                    # సరే/సరేనండి three times.
+                    filler = _END_CHECK.get(lang_f, _END_CHECK["Telugu"])
             spoken_any = True
             said.append(filler)
             full = filler
