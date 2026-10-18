@@ -4135,6 +4135,7 @@ class CallSession:
         # keeps only what the caller actually heard.
         said: list[str] = []
         asked = False
+        force_end = False  # set by the repeated-OK close below
         # A yes to our connect offer means this reply IS the transfer: if the
         # model writes anything else (a real call, 2026-10-17, wrote a goodbye
         # and hung up on an interested student), the whole reply is replaced
@@ -4403,6 +4404,20 @@ class CallSession:
             else:
                 filler = {"Telugu": "సరేనండి.", "English": "Alright.", "Hindi": "ठीक है जी।"}.get(
                     lang_f, "సరేనండి.")
+                prev_said = next((m["content"] for m in reversed(self.messages[:-1])
+                                  if m["role"] == "assistant"), "") or ""
+                fo = (self.client or {}).get("final_offer") or ""
+                if (_is_backchannel(self._last_caller_words() or "")
+                        and (prev_said.strip() == filler or (fo and fo in prev_said))):
+                    # A second bare "సరే"/"ఓకే" in a row, with nothing left to
+                    # say: the caller is done. Close politely and hang up
+                    # rather than loop "సరేనండి." -- a real SR call
+                    # (2026-10-18) went సరే/సరేనండి three times.
+                    filler = {"Telugu": "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!",
+                              "English": "Alright, call us anytime on this number. Thank you!",
+                              "Hindi": "ठीक है जी, जब भी ज़रूरत हो इसी नंबर पर कॉल कीजिए। धन्यवाद!"}.get(
+                        lang_f, "సరేనండి, ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!")
+                    force_end = True
             spoken_any = True
             said.append(filler)
             full = filler
@@ -4442,6 +4457,9 @@ class CallSession:
             # a lone "ఉమ్." that the END-marker guard had rightly ignored
             # (2026-10-17).
             end_call = True
+        if force_end:
+            end_call = True
+            log.info("ending after a second bare acknowledgement in a row")
         # The marker, or the script's fixed transfer sentence: in testing the
         # model said "connecting you now" but often left the marker off.
         phrase = (self.client or {}).get("transfer_phrase")
