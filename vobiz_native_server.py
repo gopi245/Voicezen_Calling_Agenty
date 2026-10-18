@@ -259,7 +259,7 @@ _TEAM_WILL_CALL = {"Telugu": "ఆ వివరం మా టీమ్ మీక�
 # (owner's rule, 2026-10-15), besides the caller asking for a person outright.
 # గుడ్/ఖచ్చితంగా joined on 2026-10-17: a real caller answered the connect
 # offer "గుడ్ అండి" and was hung up on instead of transferred.
-_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా(?=[\s.,!?]*$)|ఆఁ|ఆ(?=[\s.,!?ఆ]*$)|అవును|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|కానివ్వండి|కానీయండి|గుడ్|good|ఫైన్|fine|"
+_ASSENT_RX = re.compile(r"^\W*(హా|ఆహా(?=[\s.,!?]*$)|ఆఁ|ఆ(?=[\s.,!?ఆ]*$)|అవున|సరే|ఓకే|okay|ok|yes|yeah|చేయండి|కానివ్వండి|కానీయండి|గుడ్|good|ఫైన్|fine|"
                         r"ఖచ్చితంగా|తప్పకుండా|పర్ఫెక్ట్|perfect|कनेक्ट|हाँ|जी|ठीक)", re.I)
 # Bare సార్/మేడం no longer count: "కొంచెం తగ్గించండి సార్" (haggling, with
 # సార్ addressed at the bot) was transferred as a person-request (sim,
@@ -3499,11 +3499,9 @@ class CallSession:
         repeat_guard); the qualification may be asked up to four times."""
         if not (self.client or {}).get("repeat_guard"):
             return False
-        if _CONNECT_OFFER_RX.search(question):
-            last_now = self._last_caller_words() or ""
-            if _INTEREST_RX.search(last_now) and not _really_declines(last_now):
-                # Interest re-opens the connect offer, whatever the count.
-                return False
+        if _CONNECT_OFFER_RX.search(question) and self._interest_now():
+            # Interest re-opens the connect offer, whatever the count.
+            return False
         # Zero-width joiners deleted outright: "టీమ్‌కి" with and without
         # ‌ read as two different questions on a real call (2026-10-17),
         # so the limit never tripped and the offer was spoken four times.
@@ -3595,11 +3593,31 @@ class CallSession:
         who just said they are interested re-opens the offer."""
         if not (self.client or {}).get("transfer_to"):
             return False
-        last = self._last_caller_words() or ""
-        if _INTEREST_RX.search(last) and not _really_declines(last):
+        if self._interest_now():
             return False
         return sum(1 for m in self.messages if m["role"] == "assistant"
                    and _CONNECT_OFFER_RX.search(m["content"] or "")) >= 2
+
+    def _interest_now(self) -> bool:
+        """The caller's latest words show they want IN -- either their own
+        interest phrases, or a yes to OUR join/start question: a real call
+        (2026-10-18) answered "ఆన్లైన్‌లోనే ప్రారంభించాలనుకుంటున్నారా?" with
+        "అవునండి." and never got the connect offer."""
+        last = (self._last_caller_words() or "").strip()
+        if not last or _really_declines(last):
+            return False
+        if _INTEREST_RX.search(last):
+            return True
+        if not _ASSENT_RX.match(last):
+            return False
+        ui = next((i for i in range(len(self.messages) - 1, -1, -1)
+                   if self.messages[i]["role"] == "user"), None)
+        if ui is None:
+            return False
+        prev = next((self.messages[i]["content"] for i in range(ui - 1, -1, -1)
+                     if self.messages[i]["role"] == "assistant"), "") or ""
+        return bool(re.search(r"చేరాలనుకుంటున్నారా|చేరడానికి సిద్ధ|ప్రారంభించాలనుకుంటున్నారా|"
+                              r"జాయిన్ అవ్వాలనుకుంటున్నారా|జాయిన్ అవుతారా|చేరతారా", prev))
 
     def _ack_after_our_bye(self) -> bool:
         """The caller answered our spoken goodbye with a bare acknowledgement
@@ -3674,8 +3692,8 @@ class CallSession:
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
         # ask its own next question.
         last = self._last_caller_words() or ""
-        if ((self.client or {}).get("transfer_to") and _INTEREST_RX.search(last)
-                and not _really_declines(last) and not self._transfer_consented()):
+        if ((self.client or {}).get("transfer_to") and self._interest_now()
+                and not self._transfer_consented()):
             # "నాకు ఇంట్రెస్ట్ ఉందండి" deserves the offer, not a bare
             # acknowledgement (a real call, 2026-10-17).
             notes.append({"role": "system", "content": (
@@ -3957,6 +3975,8 @@ class CallSession:
         dropped_offer_after_decline = False
         dropped_goodbye = False
         swapped_go = False
+        interest_now = (not self._legacy_engine and bool((self.client or {}).get("transfer_to"))
+                        and self._interest_now() and not self._transfer_declined_standing())
         gen = stream(self.http, self._messages_for_llm(), model)
         try:
             async for piece in gen:
@@ -4058,6 +4078,15 @@ class CallSession:
                                                   _TEAM_WILL_CALL["Telugu"])
                         log.info("replaced a transfer sentence after an earlier no with the callback line")
                         swapped_go = True
+                    if (say and interest_now and not go_now and say.endswith("?")
+                            and not _CONNECT_OFFER_RX.search(say)):
+                        # The caller just said they're in ("అవునండి." to our
+                        # join question): the reply's question IS the connect
+                        # offer -- the model asked for the name instead on a
+                        # real call (2026-10-18) and the student never got it.
+                        lang_i = (self.client or {}).get("reply_language") or "Telugu"
+                        say = _CONNECT_ASK_PLAIN.get(lang_i, _CONNECT_ASK_PLAIN["Telugu"])
+                        log.info("replaced the reply's question with the connect offer -- the caller showed interest")
                     if say and swapped_go and re.search(r"ఒక్క నిమిషం|లైన్‌లో ఉండండి|లైన్లో ఉండండి|hold the line|stay on the line", say):
                         # The transfer sentence was swapped away, so its
                         # companion must go too: a real caller (2026-10-17)
