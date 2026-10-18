@@ -558,6 +558,7 @@ _END_CHECK = {"Telugu": "సరేనండి, ఇంకేమైనా సం�
 
 # A reply opening on a bare yes, and a caller question that can't take one.
 _LEADING_YES_RX = re.compile(r"^\s*(అవునండి|అవును)[,.!\s]+")
+_RESTRICTION_RX = re.compile(r"మాత్రమే|లేదండి|లేదు|ఉండదు|ఉండదండి|లేవు|లేవండి|కాదు|కాదండి|only\b", re.I)
 _WH_QUESTION_RX = re.compile(r"ఎక్కడ|ఎంత|ఎప్పుడు|ఎలా|ఎవరు|ఏంటి|ఏమిటి|ఎన్ని|ఏ కంపెనీ|where|how much|when", re.I)
 
 # A call-back goodbye the model writes on its own ("థ్యాంక్యూ అండి, ఏమైనా
@@ -4209,8 +4210,17 @@ class CallSession:
                         # Never the offer twice in a row: a half-said "అంటే..."
                         # got the same offer again on SR (2026-10-18), using
                         # up the second offer in nine seconds.
-                        log.info("dropped a back-to-back repeat of the connect offer: %r", say)
-                        continue
+                        lastc = (self._last_caller_words() or "").strip(" .,!।")
+                        if lastc and _DATEISH_RX.search(lastc) and "?" not in lastc:
+                            # The caller gave their joining date after the
+                            # offer: confirm it instead of a bare "సరేనండి."
+                            # (demo, 2026-10-18).
+                            say = (f"సరేనండి, {lastc} నుంచి." if not re.search(r"[0-9]", lastc)
+                                   else "సరేనండి, మీరు జాయిన్ అయ్యే తేదీ నోట్ చేసుకున్నానండి.")
+                            log.info("swapped a back-to-back offer for a date confirmation: %r", say)
+                        else:
+                            log.info("dropped a back-to-back repeat of the connect offer: %r", say)
+                            continue
                     if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
                             and self._question_after_offer()):
                         # They answered our offer with a question: answer it,
@@ -4220,7 +4230,11 @@ class CallSession:
                         log.info("dropped a repeat offer -- they answered the last one with a question: %r", say)
                         continue
                     if (say and not self._legacy_engine and _LEADING_YES_RX.match(say)
-                            and _WH_QUESTION_RX.search(self._last_caller_words() or "")):
+                            and (_WH_QUESTION_RX.search(self._last_caller_words() or "")
+                                 or _RESTRICTION_RX.search(say))):
+                        # Also when the answer is really a restriction: "జాబ్
+                        # ఇస్తారా?" -> "అవునండి, ... ఈఈఈ వాళ్ళకి మాత్రమే" to a
+                        # mechanical student (demo, 2026-10-18) -- the yes is false.
                         # "జాబ్ ఎక్కడ ఇస్తారు?" -> "అవునండి, ..." on two real SR
                         # calls (2026-10-18), despite the script: a where /
                         # how-much question has no yes to give.
