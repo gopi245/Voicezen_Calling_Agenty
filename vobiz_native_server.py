@@ -324,6 +324,10 @@ _INTEREST_RX = re.compile(
     r"రిజిస్ట్రేషన్ చేసుకోవాల|రిజిస్ట్రేషన్ చేయాల|రిజిస్ట్రేషన్ చేసుకుంటా|అడ్మిషన్ కావాల|interested|want to join", re.I)
 
 
+_BATCH_PICK_RX = re.compile(r"(మార్నింగ్|ఈవినింగ్|ఆఫ్టర్నూన్|ఉదయం|సాయంత్రం|మధ్యాహ్నం|morning|evening|afternoon)\s?బ్యాచ్|"
+                            r"(morning|evening|afternoon) batch", re.I)
+
+
 def _really_declines(text: str) -> bool:
     """A decline word anywhere -- unless the caller is NEGATING the no:
     "వద్దు అనట్లేదు, కనెక్ట్ చేయండి" is a yes, not a no (sim, 2026-10-17)."""
@@ -544,7 +548,13 @@ _WH_QUESTION_RX = re.compile(r"ఎక్కడ|ఎంత|ఎప్పుడు|�
 
 # A call-back goodbye the model writes on its own ("థ్యాంక్యూ అండి, ఏమైనా
 # కావాలంటే ఈ నంబర్‌కి కాల్ చేయండి."): only spoken once the caller says bye.
-_CALLBACK_BYE_RX = re.compile(r"ఏమైనా కావాలంటే.{0,30}కాల్ చేయండి")
+_CALLBACK_BYE_RX = re.compile(r"ఏమైనా.{0,15}కావాలంటే.{0,30}కాల్ చేయండి")
+
+# Bookish open questions ("మీరు ఏ విషయంపై సహాయం కోరుకుంటున్నారు?") and the
+# bot asking the CALLER about documents ("రిజిస్ట్రేషన్‌కి ఏ డాక్యుమెంట్స్
+# పంపాలి?") -- both spoken on a real SR call (2026-10-18), both banned.
+_BAD_QUESTION_RX = re.compile(r"ఏ విషయం(పై|లో|ంలో)?.{0,10}సహాయం|ఎలాంటి సహాయం|ఎలా సహాయం చేయ|సహాయం కోరుకుంటున్నార|"
+                              r"డాక్యుమెంట్స్ పంపాల|ఏ డాక్యుమెంట్స్")
 
 
 def _words(text: str) -> list[str]:
@@ -3656,6 +3666,10 @@ class CallSession:
             return False
         if _INTEREST_RX.search(last):
             return True
+        if _BATCH_PICK_RX.search(last) and not _WH_QUESTION_RX.search(last) and "?" not in last:
+            # Choosing a batch IS wanting in: "మార్నింగ్ బ్యాచ్ ఉంది." on a real
+            # SR call (2026-10-18) got a documents question instead of the offer.
+            return True
         if not _ASSENT_RX.match(last):
             return False
         ui = next((i for i in range(len(self.messages) - 1, -1, -1)
@@ -4088,6 +4102,17 @@ class CallSession:
                         break
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
+                        continue
+                    if say and not self._legacy_engine and say.endswith("?") and _BAD_QUESTION_RX.search(say):
+                        log.info("dropped a bookish / role-swapped question: %r", say)
+                        continue
+                    if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
+                            and self._question_after_offer()):
+                        # They answered our offer with a question: answer it,
+                        # don't repeat the offer -- a real SR call (2026-10-18)
+                        # spent both offers in ten seconds, then couldn't offer
+                        # when the student picked a batch.
+                        log.info("dropped a repeat offer -- they answered the last one with a question: %r", say)
                         continue
                     if (say and not self._legacy_engine and _LEADING_YES_RX.match(say)
                             and _WH_QUESTION_RX.search(self._last_caller_words() or "")):
