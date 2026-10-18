@@ -3957,16 +3957,32 @@ class CallSession:
             users = [m["content"] or "" for m in self.messages if m["role"] == "user"]
             # Any branch question counts -- the model shortens the line ("ఏ
             # బ్రాంచండి?"), and an exact match missed the fee on a demo.
-            if (ba["line"] in prev_bot or ("బ్రాంచ" in prev_bot and prev_bot.rstrip().endswith("?"))) \
-                    and len(users) >= 2:
-                # Their branch answer ("ఈఈఈ", "సివిల్") read together with the
-                # qualification they gave just before.
-                qual_text = users[-2] + " " + last
+            # The qualification they named earlier (the latest one), if any.
+            earlier_qual = next((u for u in reversed(users[:-1]) if re.search(ba["needs"], u, re.I)), None)
+            branch_now = bool(re.search(ba["given"], last, re.I)) and not re.search(r"కాదు|కాదండి|కాద", last)
+            if earlier_qual and branch_now and not fee_given:
+                # Their branch ("ఈఈఈ", "మెకానికల్") read together with the
+                # qualification they gave earlier -- even with a question in
+                # between (the 14:54 replay).
+                qual_text = earlier_qual + " " + last
             elif ((asked_qual or not fee_given) and re.search(ba["needs"], last, re.I)
                   and not re.search(ba["given"], last, re.I)):
                 return [{"role": "system", "content": (
                     f"They named their qualification but not the branch. Say ONLY this, word for word: "
                     f"\"{ba['line']}\" -- no fee, no other detail yet.")}]
+            elif earlier_qual and not fee_given and not branch_now:
+                # Qualification known, branch still not: a real call (14:54)
+                # skipped the job question, guessed "సివిల్", ignored "నాది
+                # సివిల్ కాదు" three times, and the replay re-asked the whole
+                # qualification.
+                corrected = bool(re.search(r"కాదు|కాదండి|కాద", last))
+                return [{"role": "system", "content": (
+                    "Their qualification is known but their BRANCH is not. "
+                    + ("They just CORRECTED you: start with \"సారీ అండి.\" " if corrected else "")
+                    + ("If they asked something (job, placement, salary), first say \"అది మీ బ్రాంచ్ బట్టి ఉంటుందండి.\" "
+                       if not corrected else "")
+                    + "Then ask ONLY: \"మీ బ్రాంచ్ ఏంటండి? ఈఈఈ నా, వేరే బ్రాంచా?\" -- never guess a branch, never ask "
+                      "the whole qualification again, and never repeat a misheard word back (say బీటెక్ / డిప్లొమా).")}]
         line = (next((ln for rx, ln in quals if re.search(rx, qual_text, re.I)), None)
                 if (asked_qual or not fee_given or qual_text != last) else None)
         if line:
