@@ -596,7 +596,7 @@ _GOODBYE_PATTERN = re.compile(
     "|".join([
         r"\bbye\b", r"\bbyee\b", r"good ?bye", r"\bthank", r"\bthanks\b", r"\btq\b", r"that'?s all",
         r"not interested", r"no need", r"call later", r"\bok bye",
-        "బై", "బాయ్", "థాంక్", "ధన్యవాద", "ఉంటాను", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
+        "బై", "బాయ్", "థాంక్", "థ్యాంక్", "ధన్యవాద", "ఉంటాను", r"ఉంటా(?=[\s.,!।]|$)", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
         "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ", "మళ్ళీ చేస్తా", "మళ్ళీ కాల్ చేస్తా",
         "ఉంటా మరి", "ఉంటానండి",
     ]),
@@ -3590,6 +3590,25 @@ class CallSession:
         return sum(1 for m in self.messages if m["role"] == "assistant"
                    and _CONNECT_OFFER_RX.search(m["content"] or "")) >= 2
 
+    def _ack_after_our_bye(self) -> bool:
+        """The caller answered our spoken goodbye with a bare acknowledgement
+        ("ఓకే ఓకే.", "థ్యాంక్ యూ.") -- that IS their goodbye. A real outbound
+        call (2026-10-18) looped ధన్యవాదాలు/ఓకే five times for ninety seconds
+        because the hangup guard kept waiting for a textbook bye."""
+        ui = next((i for i in range(len(self.messages) - 1, -1, -1)
+                   if self.messages[i]["role"] == "user"), None)
+        if ui is None:
+            return False
+        last = (self.messages[ui]["content"] or "").strip()
+        if not last or len(last) > 40:
+            return False
+        if not re.fullmatch(r"[\s.,!।]*((ఓకే|సరే|సరేనండి|ఆ|హా|అలాగే|ok|okay|థ్యాంక్ యూ|థాంక్ యూ|"
+                            r"thank you|thanks|మేడం|madam|సర్|అండి|జీ)[\s.,!।]*)+", last, re.I):
+            return False
+        prev = next((self.messages[i]["content"] for i in range(ui - 1, -1, -1)
+                     if self.messages[i]["role"] == "assistant"), "") or ""
+        return bool(re.search(r"(బై|నమస్తే|నమస్కారం|ధన్యవాదాలు)[!. ]*$", _strip_markers(prev).strip()))
+
     def _declined_offer_now(self) -> bool:
         """The caller's latest words decline our just-made connect offer --
         loosely: "హా ఒక్క నిమిషం ఆగండి... వద్దు లే" starts with a yes-word
@@ -3964,7 +3983,8 @@ class CallSession:
                     bye_cfg = (self.client or {}).get("goodbye_phrase")
                     if (say and not self._legacy_engine and bye_cfg
                             and (bye_cfg in say or re.search(r"(^|\s)బై[!.\s]*$", say))
-                            and (not _caller_said_goodbye(self._last_caller_words())
+                            and (not (_caller_said_goodbye(self._last_caller_words())
+                                      or self._ack_after_our_bye())
                                  or self._declined_offer_now())):
                         # The model closed the call on a lone "ఉమ్." (a real
                         # call, 2026-10-17): a goodbye is only spoken when the
@@ -4096,6 +4116,11 @@ class CallSession:
                               "content": full if self._legacy_engine or not spoken_text else spoken_text})
         spoken_full = _strip_markers(full).strip()
         end_call = _reply_wants_end_call(END_MARKER in full, spoken_full, self._legacy_engine, self._last_caller_words())
+        if (not end_call and not self._legacy_engine and END_MARKER in full
+                and not spoken_full.rstrip().endswith("?") and self._ack_after_our_bye()):
+            # An "ఓకే ఓకే" to our goodbye counts as the caller's goodbye.
+            log.info("ending after the caller acknowledged our goodbye")
+            end_call = True
         if end_call and not self._legacy_engine and self._declined_offer_now():
             # "వద్దు లే" right after the connect offer declines the TRANSFER,
             # not the call (sim, 2026-10-17) -- the caller stays on the line.
