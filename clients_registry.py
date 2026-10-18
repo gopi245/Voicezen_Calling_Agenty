@@ -53,6 +53,10 @@ CLIENTS: dict[str, dict] = {
         "tts_provider": "raya",
         # A little faster than normal -- the owner's pick (2026-10-18).
         "tts_speed": 1.1,
+        # Spoken-text fixes: the Raya voice said "పన్నెండున్నర" so it sounded
+        # like "పన్నెండు వందల" on a real call; the split spelling was the
+        # owner's pick from five voice samples (2026-10-18).
+        "speech_fixes": {"పన్నెండున్నర": "పన్నెండు న్నర"},
         # Speech-recognition hints: the words callers say about the project.
         "stt_prompt": (
             "వేదాంత వనం, శ్రీగంధం, ఫామ్‌ల్యాండ్, ప్లాట్, సెంట్లు, సెంటు, గజం, ఎకరం, లక్షలు, "
