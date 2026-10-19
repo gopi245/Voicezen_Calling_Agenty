@@ -4443,6 +4443,17 @@ class CallSession:
                         if not stripped:
                             continue  # the sentence was only "అవునండి."
                         say = stripped
+                    day_conf = (re.match(r"^సరేనండి, (.{1,40}?) అండి\.$", say)
+                                if say and (self.client or {}).get("closing_phrase") else None)
+                    if day_conf:
+                        lastc_d = self._last_caller_words() or ""
+                        words_d = [w for w in day_conf.group(1).split() if w not in ("ఈ", "వచ్చే")]
+                        if words_d and not any(w[:3] in lastc_d for w in words_d):
+                            # The caller never said that day: "ఆ ఓకే" to
+                            # "శనివారం లేదా ఆదివారం?" was booked as Saturday on a
+                            # real call (2026-10-19).
+                            log.info("replaced a visit day the caller never said: %r", say)
+                            say = "శనివారమా, ఆదివారమా అండి?"
                     if (say and not self._legacy_engine and (self.client or {}).get("branch_ask")
                             and _PLACEMENT_PROMISE_RX.search(say) and "మాత్రమే" not in say
                             and self._student_profile()[0] == "practicals"):
@@ -5263,6 +5274,26 @@ class CallSession:
                 summary = parsed.get("summary") or None
                 if parsed.get("sentiment") in ("positive", "neutral", "negative"):
                     sentiment = parsed["sentiment"]
+
+                # Site-visit leads on WhatsApp (clients_registry
+                # "lead_alert_whatsapp" + "closing_phrase", e.g. Vedantha
+                # Vanam): real callers booked visits on 2026-10-19 and nobody
+                # was told.
+                alert_to = (self.client or {}).get("lead_alert_whatsapp")
+                if alert_to and (self.client or {}).get("closing_phrase"):
+                    said_v = [m["content"] or "" for m in self.messages if m["role"] == "assistant"]
+                    visit = next((h.group(1) for a in reversed(said_v)
+                                  for h in [re.search(r"సరేనండి, (.{1,40}?) అండి\. మీ పేరు", a)] if h), None)
+                    booked = any(self.client["closing_phrase"] in a for a in said_v)
+                    phone_v = self._to_number if self._direction == "outbound" else self._from_number
+                    lines_v = [self.client.get("lead_alert_title") or "New lead",
+                               f"1. Name: {caller_name or '-'}",
+                               f"2. Contact Number: {phone_v or '-'}",
+                               f"3. Site Visit Day: {visit or '-'}",
+                               f"4. Visit Booked: {'Yes' if booked else 'No'}"]
+                    if summary:
+                        lines_v.append(f"Summary: {summary}")
+                    await asyncio.to_thread(voicezen.send_lead_alert, alert_to, "\n".join(lines_v))
 
                 plan = parsed.get("subscription_plan") or None
                 has_address = any(parsed.get(k) for k in ("house_number", "street_name", "city", "district", "pincode"))

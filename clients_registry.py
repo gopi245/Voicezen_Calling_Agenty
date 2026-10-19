@@ -53,10 +53,9 @@ CLIENTS: dict[str, dict] = {
         "tts_provider": "raya",
         # A little faster than normal -- the owner's pick (2026-10-18).
         "tts_speed": 1.1,
-        # Spoken-text fixes: the Raya voice said "పన్నెండున్నర" so it sounded
-        # like "పన్నెండు వందల" on a real call; the split spelling was the
-        # owner's pick from five voice samples (2026-10-18).
-        "speech_fixes": {"పన్నెండున్నర": "పన్నెండు న్నర"},
+        # Spoken-text fixes are further down (with the digit-to-word ones):
+        # "పన్నెండున్నర" -> "పన్నెండు న్నర" is the owner's pick from five voice
+        # samples (2026-10-18) -- the voice made it sound like "పన్నెండు వందల".
         # Speech-recognition hints: the words callers say about the project.
         "stt_prompt": (
             "వేదాంత వనం, శ్రీగంధం, ఫామ్‌ల్యాండ్, ప్లాట్, సెంట్లు, సెంటు, గజం, ఎకరం, లక్షలు, "
@@ -74,6 +73,17 @@ CLIENTS: dict[str, dict] = {
         # the call with final_bye -- no more model replies.
         "closing_phrase": "సైట్ విజిట్ వివరాలు, లొకేషన్ మీకు ఈ నంబర్‌కి పంపిస్తామండి",
         "final_bye": "ధన్యవాదాలు అండి, నమస్కారం!",
+        # Every finished call's lead goes to the client on WhatsApp. Empty
+        # until the client's number arrives (owner, 2026-10-19).
+        "lead_alert_whatsapp": "",
+        "lead_alert_title": "Vedantha Vanam - site visit lead",
+        # Numbers the model writes as digits, spoken as words.
+        "speech_fixes": {"పన్నెండున్నర": "పన్నెండు న్నర",
+                         "25 సెంట్ల": "పాతిక సెంట్ల", "25 సెంట్లు": "పాతిక సెంట్లు", "12.5 సెంట్ల": "పన్నెండు న్నర సెంట్ల",
+                         "12.5": "పన్నెండు న్నర", "100 శ్రీగంధం": "వంద శ్రీగంధం", "100 మొక్క": "వంద మొక్క",
+                         "7 లక్షల": "ఏడు లక్షల", "56,000": "యాభై ఆరు వేల", "1157": "వెయ్యి నూట యాభై ఏడు",
+                         "12 సంవత్సరాల": "పన్నెండు సంవత్సరాల", "60:40": "అరవై నలభై", "14 కిలోమీటర్ల": "పద్నాలుగు కిలోమీటర్ల",
+                         "7 కిలోమీటర్ల": "ఏడు కిలోమీటర్ల", "10 కిలోమీటర్ల": "పది కిలోమీటర్ల"},
         # Sentences of the client's convince line: spoken only when the caller
         # is about to leave, never tacked onto a price or facilities answer.
         "persuade_markers": ["పరిశీలించి నిర్ణయం", "అనుకూలమైన రోజున సైట్ విజిట్ ఏర్పాటు"],
