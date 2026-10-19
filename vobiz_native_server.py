@@ -3879,7 +3879,8 @@ class CallSession:
                 continue
             hit = re.search(rx, t, re.I)
             if hit:
-                return hit.group(0)
+                # "రేపైతే" (if tomorrow) is tomorrow -- "రేపై అండి" was spoken.
+                return "రేపు" if hit.group(0).startswith("రేపై") else hit.group(0)
         return None
 
     def _fee_repeat_reply(self, text: str) -> str | None:
