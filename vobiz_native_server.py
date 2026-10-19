@@ -50,7 +50,7 @@ import aiohttp
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -58,6 +58,7 @@ sys.path.insert(0, str(HERE.parent / "agent"))
 load_dotenv(HERE / ".env")
 
 import voicezen  # noqa: E402
+import excel_campaign  # noqa: E402
 
 # Optional: RNNoise noise cancellation (clients_registry "noise_cancellation").
 # Missing packages only switch the feature off -- the server still starts.
@@ -956,6 +957,7 @@ async def _warm_voicezen_greeting():
 @app.on_event("startup")
 async def _on_startup():
     asyncio.create_task(_warm_voicezen_greeting())
+    excel_campaign.init(_place_excel_call)
 
 
 async def _report_unanswered_campaign_call(campaign: dict, cause: str | None) -> None:
@@ -1020,6 +1022,9 @@ async def hangup(request: Request):
     campaign = info.get("campaign") if info else None
     if campaign:
         await _report_unanswered_campaign_call(campaign, cause)
+    # Excel campaign: an entry still here means nobody answered.
+    excel_campaign.on_hangup(call_uuid, cause, form.get("Duration"),
+                             answered=not (info and info.get("excel_campaign")))
 
     return PlainTextResponse("OK")
 
@@ -1096,6 +1101,99 @@ async def dial(request: Request):
             if 200 <= r.status < 300 and campaign and request_uuid:
                 pending_call_info[request_uuid] = {"campaign": campaign}
             return data
+
+
+async def _place_excel_call(to: str, from_number: str, ref: dict) -> tuple[bool, str | None, str]:
+    """One Excel-campaign call from the campaign line (see excel_campaign.py).
+    The answered call is an ordinary outbound call on that line's registry
+    entry: same script, same guards as its inbound calls."""
+    base = PUBLIC_WSS_URL.replace("wss://", "https://").rsplit("/media", 1)[0]
+    payload = {
+        "from": from_number,
+        "to": to,
+        "answer_url": f"{base}/answer?direction=outbound",
+        "answer_method": "POST",
+        "hangup_url": f"{base}/hangup",
+        "hangup_method": "POST",
+    }
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            f"{VOBIZ_API}/Account/{VOBIZ_AUTH_ID}/Call/",
+            headers={"X-Auth-ID": VOBIZ_AUTH_ID, "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                     "Content-Type": "application/json"},
+            json=payload, timeout=aiohttp.ClientTimeout(total=15),
+        ) as r:
+            data = await r.json(content_type=None)
+            log.info("excel dial: from=%s to=%s -> HTTP %s %s", from_number, to, r.status, data)
+            request_uuid = data.get("request_uuid") if isinstance(data, dict) else None
+            if 200 <= r.status < 300 and request_uuid:
+                pending_call_info[request_uuid] = {"excel_campaign": ref}
+                return True, request_uuid, ""
+            return False, None, f"HTTP {r.status} {data}"
+
+
+def _campaign_page_auth(request: Request):
+    """None when allowed, else the 401 asking the browser for the password."""
+    if not excel_campaign.PAGE_PASSWORD:
+        return PlainTextResponse("Campaign page is off: set CAMPAIGN_PAGE_PASSWORD in .env", status_code=503)
+    if excel_campaign.check_auth(request.headers.get("authorization")):
+        return None
+    return PlainTextResponse("Password needed", status_code=401,
+                             headers={"WWW-Authenticate": 'Basic realm="campaigns"'})
+
+
+@app.get("/campaigns")
+async def campaigns_page(request: Request):
+    return _campaign_page_auth(request) or HTMLResponse(excel_campaign.PAGE_HTML)
+
+
+@app.get("/campaigns/api/state")
+async def campaigns_state(request: Request):
+    return _campaign_page_auth(request) or JSONResponse(excel_campaign.state_json())
+
+
+@app.post("/campaigns/upload")
+async def campaigns_upload(request: Request):
+    denied = _campaign_page_auth(request)
+    if denied:
+        return denied
+    form = await request.form()
+    up = form.get("file")
+    if up is None or not hasattr(up, "read"):
+        return JSONResponse({"error": "Choose a file first."})
+    data = await up.read()
+    if len(data) > 5_000_000:
+        return JSONResponse({"error": "File is too big (max 5 MB)."})
+    try:
+        c = excel_campaign.create_campaign(str(form.get("name") or ""), up.filename or "", data)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)})
+    except Exception:
+        log.exception("campaign upload failed")
+        return JSONResponse({"error": "Could not read that file. Save it as .xlsx and try again."})
+    ready = sum(1 for k in c["contacts"] if k["status"] == "pending")
+    return JSONResponse({"id": c["id"], "name": c["name"], "total": len(c["contacts"]), "ready": ready})
+
+
+@app.get("/campaigns/{cid}/results.csv")
+async def campaigns_results(cid: str, request: Request):
+    denied = _campaign_page_auth(request)
+    if denied:
+        return denied
+    body = excel_campaign.results_csv(cid)
+    if body is None:
+        return PlainTextResponse("not found", status_code=404)
+    return Response(body.encode("utf-8"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="campaign-{cid}-results.csv"'})
+
+
+@app.post("/campaigns/{cid}/{action}")
+async def campaigns_action(cid: str, action: str, request: Request):
+    denied = _campaign_page_auth(request)
+    if denied:
+        return denied
+    err = excel_campaign.set_status(cid, action)
+    return JSONResponse({"error": err} if err else {"ok": True})
 
 
 _transfer_failed_wav: bytes | None = None
@@ -2573,6 +2671,11 @@ class CallSession:
         self._to_number: str | None = None
         self._direction = "inbound"
         self._campaign: dict | None = None
+        # Excel campaign call (excel_campaign.py): a plain outbound call on
+        # the campaign line's own script, plus opt-out handling.
+        self._excel: dict | None = None
+        self._opted_out = False
+        self._excel_busy = False
         # Telugu by default (this client's callers) -- overridden in start()
         # for a campaign/instant-lead call configured with a different
         # language.
@@ -2799,6 +2902,9 @@ class CallSession:
             self._to_number = info.get("to")
             self._direction = info.get("direction", "inbound")
             self._campaign = info.get("campaign")
+            self._excel = info.get("excel_campaign")
+            if self._excel:
+                excel_campaign.on_answered(self._call_uuid)
 
         if self._campaign:
             # Campaign calls skip client-registry resolution entirely -- the
@@ -2992,6 +3098,10 @@ class CallSession:
                 log.info("script for client '%s': code (%s)", self.client["client_id"], self.client["prompt_module"])
             if config["ai"]:
                 self._apply_ai_settings(config["ai"])
+
+        if self._excel and instructions:
+            instructions = instructions + excel_campaign.OUTBOUND_NOTE
+            log.info("excel campaign %s call to %s", self._excel.get("campaign_id"), self._to_number)
 
         if greeting is None or instructions is None:
             # A database-only client whose script couldn't be loaded. Speaking
@@ -3520,6 +3630,41 @@ class CallSession:
     async def _answer_turn(self, text: str, transcript_at: float,
                            speech_seen_at: float | None, turn: dict | None):
         self.messages.append({"role": "user", "content": text})
+        excel_line = excel_why = None
+        if self._excel:
+            # Excel campaign: "don't call me" is said back and honoured by
+            # the server, never left to the model; busy means we call back
+            # later; "where did you get my number" has one true answer; a
+            # bare "hello" right after the greeting means they missed it.
+            said_before = sum(1 for m in self.messages if m["role"] == "assistant")
+            if excel_campaign.wants_opt_out(text):
+                self._opted_out = True
+                excel_campaign.add_dnc(_to_e164(self._to_number), "said do not call")
+                excel_line, excel_why = excel_campaign.OPT_OUT_LINE, "do not call"
+            elif excel_campaign.WRONG_NUMBER_RX.search(text or ""):
+                self._opted_out = "wrong_number"
+                excel_campaign.add_dnc(_to_e164(self._to_number), "wrong number / never enquired")
+                excel_line, excel_why = excel_campaign.WRONG_NUMBER_LINE, "wrong number"
+            elif excel_campaign.wants_later(text) and not self._visit_day_known():
+                self._excel_busy = True
+                excel_line, excel_why = excel_campaign.BUSY_LINE, "busy, call back later"
+            elif excel_campaign.NUMBER_SOURCE_RX.search(text or ""):
+                excel_line = excel_campaign.NUMBER_SOURCE_LINE
+                if said_before > 1:  # already talking: no "can we talk?" again
+                    excel_line = excel_line.split("కాల్ చేశాను.")[0] + "కాల్ చేశాను."
+                excel_why = "where we got the number"
+            elif said_before <= 1 and excel_campaign.HELLO_RX.search(text or ""):
+                excel_line, excel_why = excel_campaign.HELLO_LINE, "hello after the greeting"
+        if excel_line:
+            end = self._opted_out or self._excel_busy
+            line = excel_line
+            self.messages.append({"role": "assistant", "content": line})
+            log.info("bot: %s%s  (excel campaign: %s)", line, "  [END_CALL]" if end else "", excel_why)
+            self._speak_task = asyncio.create_task(self._speak(line, end_call=end, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         if not self._legacy_engine and self._wants_final_offer(text):
             # An interested caller (offered before, never said no) is leaving
             # with a thanks/bye: one last connect offer instead of the
@@ -5518,6 +5663,28 @@ class CallSession:
             wf.writeframes(self._both_sides())
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
+    def _excel_result(self, duration: float) -> dict:
+        """How an Excel-campaign call went, from what was actually said."""
+        said = [m["content"] or "" for m in self.messages if m["role"] == "assistant"]
+        heard = [m["content"] or "" for m in self.messages if m["role"] == "user"]
+        client = self.client or {}
+        visit = next((h.group(1) for a in reversed(said)
+                      for h in [re.search(r"సరేనండి, (.{1,40}?) అండి\. మీ పేరు", a)] if h), None)
+        if self._opted_out:
+            status = "wrong_number" if self._opted_out == "wrong_number" else "opted_out"
+        elif client.get("closing_phrase") and any(client["closing_phrase"] in a for a in said):
+            status = "booked"
+        elif self._excel_busy or (client.get("busy_line") and any(client["busy_line"] in a for a in said)):
+            status = "busy_later"
+        elif any(_really_declines(h) for h in heard):
+            status = "not_interested"
+        elif visit or any(re.search(r"ధర|రేటు|ఎంత|లొకేషన్|ఎక్కడ|విజిట్|వస్తాను", h) for h in heard):
+            status = "interested"
+        else:
+            status = "talked"
+        return {"status": status, "duration": round(duration), "visit_day": visit,
+                "caller_said": " | ".join(h for h in heard if h)[:500]}
+
     async def _report(self):
         """Send the finished call to the VoiceZen Dashboard. Runs after
         everything else has torn down, matching voicezen.py's own stated
@@ -5527,6 +5694,11 @@ class CallSession:
         duration = time.time() - self._started_at
         turns = [m for m in self.messages if m["role"] != "system"]
         transcript = "\n".join(f"[{m['role']}] {m['content']}" for m in turns)
+        if self._excel:
+            try:
+                excel_campaign.on_call_result(self._call_uuid, self._excel_result(duration))
+            except Exception:
+                log.exception("excel campaign result failed")
 
         # Vobiz's recording has both sides; ours has only the caller, with
         # silence wherever the agent spoke. Prefer theirs, keep ours as the
@@ -5659,6 +5831,8 @@ class CallSession:
                 summary = parsed.get("summary") or None
                 if parsed.get("sentiment") in ("positive", "neutral", "negative"):
                     sentiment = parsed["sentiment"]
+                if self._excel:
+                    excel_campaign.add_summary(_to_e164(self._to_number), summary, caller_name)
 
                 # Site-visit leads on WhatsApp (clients_registry
                 # "lead_alert_whatsapp" + "closing_phrase", e.g. Vedantha
