@@ -4779,7 +4779,10 @@ class CallSession:
                         log.info("dropped a goodbye -- the caller is still asking: %r", say)
                         continue
                     if say and not self._legacy_engine and (self.client or {}).get("qualification_lines"):
-                        jd = re.search(r"(?:సరేనండి,?\s*|మీరు\s+)(.{2,30}?)\s+నుంచి", say)
+                        # Statements only: the QUESTION "మీరు ఎప్పటి నుంచి జాయిన్
+                        # అవ్వాలనుకుంటున్నారు?" matched too and was dropped (audit).
+                        jd = (None if say.rstrip().endswith("?") or "ఎప్పటి" in say
+                              else re.search(r"(?:సరేనండి,?\s*|మీరు\s+)(.{2,30}?)\s+నుంచి", say))
                         if jd:
                             all_cj = " ".join(m["content"] or "" for m in self.messages if m["role"] == "user")
                             words_j = [w for w in jd.group(1).split() if w not in ("మీరు", "గారు", "అండి")]
