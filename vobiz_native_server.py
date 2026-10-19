@@ -3469,6 +3469,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        noise_line = None if self._legacy_engine else self._noise_turn_reply(text)
+        if noise_line:
+            self.messages.append({"role": "assistant", "content": noise_line})
+            log.info("bot: %s  (noise turn #%d: %r)", noise_line, self._noise_turns, text)
+            self._speak_task = asyncio.create_task(self._speak(noise_line, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         size_price = None if self._legacy_engine else self._size_price_reply(text)
         if size_price:
             self.messages.append({"role": "assistant", "content": size_price})
@@ -3897,6 +3906,43 @@ class CallSession:
                     f"కాంట్రాక్ట్ జాబ్స్‌లో హెల్ప్ చేస్తామండి. {tail}")
         return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
                 + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
+
+    def _name_known(self) -> bool:
+        """The caller gave a real name in answer to our name question."""
+        for i, m in enumerate(self.messages[:-1]):
+            if m["role"] == "assistant" and "పేరు చెప్తార" in (m["content"] or ""):
+                nxt = self.messages[i + 1]
+                if nxt["role"] == "user" and _looks_like_name(nxt["content"] or ""):
+                    return True
+        return False
+
+    def _noise_turn_reply(self, text: str) -> str | None:
+        """Clients with "relevance_rx": a turn with nothing to do with the
+        call -- background people, traffic, garbled fragments -- gets "please
+        say that again" instead of an answer, and after two in a row a word
+        about the noise. A noisy test call (2026-10-19) answered "నాకు కొంచెం
+        డ్రాప్స్ వేస్తారా?" and "అయ్యో సారీ అమ్మ... లేట్ అయిపోతా ఉందమ్మా" (other
+        people near the caller) as if the caller had said them."""
+        rel = (self.client or {}).get("relevance_rx")
+        t = (text or "").strip()
+        if not rel or not t:
+            return None
+        prev = next((m["content"] for m in reversed(self.messages[:-1]) if m["role"] == "assistant"), "") or ""
+        relevant = (re.search(rel, t, re.I) or _is_backchannel(t) or _caller_said_goodbye(t)
+                    or ("పేరు చెప్తార" in prev and _looks_like_name(t))
+                    or re.search((self.client or {}).get("visit_day_rx") or r"$^", t, re.I))
+        if relevant:
+            self._noise_turns = 0
+            return None
+        n = getattr(self, "_noise_turns", 0) + 1
+        self._noise_turns = n
+        if n == 1:
+            return "సారీ అండి, సరిగ్గా వినపడలేదు. ఇంకోసారి చెప్తారా?"
+        if n == 2:
+            return ("అక్కడ కొంచెం సౌండ్ ఎక్కువగా ఉందండి. కొంచెం నిశ్శబ్దంగా ఉన్న చోట నుంచి మాట్లాడతారా, "
+                    "లేక తర్వాత కాల్ చేయమంటారా?")
+        # Past two, keep it to one short line so noise can't run the call.
+        return "సారీ అండి, వినపడలేదు. ఇంకోసారి చెప్తారా?"
 
     def _size_price_reply(self, text: str) -> str | None:
         """Clients with "price_per_cent": the price for a size the caller
@@ -4573,6 +4619,23 @@ class CallSession:
                         continue
                     cp = (self.client or {}).get("closing_phrase")
                     lastq = self._last_caller_words() or ""
+                    if say and cp and re.sub(r"[‌‍]", "", cp) in re.sub(r"[‌‍]", "", say):
+                        # The booked-visit close only with a REAL day and name: a
+                        # noisy test (2026-10-19) closed with no day at all and
+                        # "పాస్ట్ గారు" (noise) as the name.
+                        if not self._visit_day_known():
+                            log.info("blocked the closing line -- no visit day yet: %r", say)
+                            say = "మీకు ఏ రోజు వీలవుతుందో చెప్తారా అండి?"
+                        elif not self._name_known():
+                            log.info("blocked the closing line -- no name yet: %r", say)
+                            say = "మీ పేరు చెప్తారండి?"
+                    if (say and cp and "ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి" in say
+                            and not _caller_said_goodbye(lastq) and not _really_declines(lastq)
+                            and not re.search(r"బిజీ|ఇంట్రెస్ట్ లేదు|వద్దు|తర్వాత", lastq)):
+                        # The "call us anytime" goodbye only after a bye / no /
+                        # busy: "కూడా లేదు" (a noise fragment) got it on a test.
+                        log.info("dropped a call-anytime goodbye -- the caller didn't leave: %r", say)
+                        continue
                     if (say and cp and cp not in say and re.search(r"నమస్కారం|ధన్యవాదాలు|వివరాలు పంపిస్తారు", say)
                             and not _caller_said_goodbye(lastq)
                             and ("?" in lastq or re.search(r"ఎంత|ఎక్కడ|ఎలా|ఏంటి|ఎప్పుడు|అయితే|ఉందా|ఇస్తారా|చెప్పండి", lastq))):
