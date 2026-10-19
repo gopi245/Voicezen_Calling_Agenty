@@ -127,7 +127,10 @@ CLIENTS: dict[str, dict] = {
             # Spoken EEE too: "ట్రిబుల్ ఈ", "త్రిబి", "3BE" were asked again
             # and again on a real call (2026-10-19).
             "given": r"ఈఈఈ|ఈ ఈ ఈ|\bEEE\b|ట్రిబుల్ ?ఈ|ట్రిపుల్ ?ఈ|త్రిబుల్ ?ఈ|త్రిపుల్ ?ఈ|త్రిబి|ట్రిబి|"
-                     r"triple ?e|\b3 ?B?E\b|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
+                     r"triple ?e|\b3 ?B?E\b|"
+                     # "ఈఈ" / "EE", and a lone "ఈ" / "E" as the whole answer to
+                     # the branch question (owner, 2026-10-19).
+                     r"ఈఈ|ఈ ఈ|\bEE\b|^\W*(ఈ|e)(\s*అండి)?\W*$|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
                      r"సీఎస్|CSE|కంప్యూటర్|computer|ఈసీఈ|ఈ సీ ఈ|ఈసీ|ఈ సీ|ECE|\bEC\b|ఐటీ|ఐ టీ|\bIT\b|ఆటోమొబైల్|"
                      r"automobile|కెమికల్|chemical|ఏరోనాటికల్|బయోటెక్|బయో టెక్|బ్రాంచ్",
             "line": "ఏ బ్రాంచ్ అండి? ఈఈఈ నా, లేక వేరే బ్రాంచా?",
