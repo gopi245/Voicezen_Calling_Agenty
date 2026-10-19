@@ -130,7 +130,7 @@ OUTCOME_FOR = {
 
 # campaign-dispatch hands contacts over as fast as it likes (two a minute,
 # any hour). Agent-script calls are held here instead and placed ONE AT A
-# TIME, only inside calling hours (owner's ask, 2026-10-19: no Supabase
+# TIME (now up to MAX_CONCURRENT_CALLS), only inside calling hours (owner's ask, 2026-10-19: no Supabase
 # deploy needed). The queue is saved under logs/ so a restart or redeploy
 # picks up where it left off.
 #
@@ -144,6 +144,9 @@ IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
 CALL_START_MIN_IST = 10 * 60        # 10:00 IST
 CALL_END_MIN_IST = 19 * 60 - 5      # no new call after 18:55 IST
 GAP_BETWEEN_CALLS_S = 20
+# Two at a time (owner's choice, 2026-10-19): the Vobiz account runs 3 calls
+# at once in total, shared with inbound calls, so one line always stays free.
+MAX_CONCURRENT_CALLS = 2
 ACTIVE_CALL_TIMEOUT_S = 20 * 60     # a call whose hangup never arrives stops blocking
 
 _QUEUE_FILE = Path(__file__).resolve().parent / "logs" / "agent_script_queue.json"
@@ -241,7 +244,7 @@ async def _run(place) -> None:
             if not within_hours():
                 await _sleep(60)
                 continue
-            if _active:
+            if len(_active) >= MAX_CONCURRENT_CALLS:
                 await _sleep(10)
                 continue
             item = q[0]
