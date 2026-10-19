@@ -3110,7 +3110,8 @@ class CallSession:
                 return
         if (not self._legacy_engine and self._playback_started_at is not None
                 and not any(m["role"] == "user" for m in self.messages)
-                and time.time() - self._playback_started_at < GREETING_GUARD_S):
+                and (time.time() - self._playback_started_at < GREETING_GUARD_S
+                     or (self.client or {}).get("protect_greeting"))):
             # VOICEZEN TEST -- a reflex "okay"/"hello" as the call picks up must
             # not cut the welcome: a real call (2026-10-10) lost the welcome to
             # an "Okay" 1.1 s in, so the caller never heard the demo question.
@@ -3280,6 +3281,14 @@ class CallSession:
                 and not any(m["role"] == "user" for m in self.messages)
                 and time.time() - self._playback_started_at < GREETING_GUARD_S):
             log.info("ignored %r: heard in the first %.1fs of the welcome (line noise)", text, GREETING_GUARD_S)
+            return
+        if (not self._legacy_engine and (self.client or {}).get("protect_greeting")
+                and not any(m["role"] == "user" for m in self.messages)
+                and (self.playing or (self._speak_task is not None and not self._speak_task.done()))):
+            # The WHOLE greeting is protected on this line: "సైవిక్ కి వస్తాం"
+            # 2.5 s in replaced it on a real test (2026-10-19) and the caller
+            # asked "ఎవరండీ?" three times -- they never heard who was calling.
+            log.info("ignored %r: heard while the greeting is still playing", text)
             return
         if not self._legacy_engine and not self._pending:
             timer = self._barge_timer

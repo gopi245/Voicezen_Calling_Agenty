@@ -89,7 +89,14 @@ CLIENTS: dict[str, dict] = {
         # Questions answered with a fixed line by the server (regex, line).
         # Location: the model gave only Narasaraopet; JNTU (7 km) is the
         # owner's lead point (2026-10-19). "సైజ్ ఎక్కడ" is a misheard "సైట్".
+        # The whole greeting always plays: nothing the caller says during it
+        # replaces it (a real test, 2026-10-19, never heard who was calling).
+        "protect_greeting": True,
         "fixed_answers": [
+            # "Who is this / why did you call?" -> the greeting again: a real test
+            # caller asked "ఎవరండీ?" three times (2026-10-19).
+            (r"ఎవర(ు|ండి|ండీ)|మీరెవరు|ఎవరు మాట్లాడ|ఎక్కడి నుంచి (మాట్లాడ|కాల్)|ఎందుకు కాల్ చేశార|ఏ కంపెనీ|who is this|who are you",
+             "నమస్కారం సార్! నేను వేదాంత వనం ప్రాజెక్ట్ నుంచి మాట్లాడుతున్నాను. మీకు రియల్ ఎస్టేట్ లేదా వ్యవసాయ భూములలో పెట్టుబడి పెట్టే ఆసక్తి ఉందని మీకు మా ప్రాజెక్ట్ వివరాలు తెలియజేయడానికి కాల్ చేశాను. ఇప్పుడు రెండు నిమిషాలు మాట్లాడవచ్చా సార్?"),
             # Risk / trust: a fixed, honest line -- an audit (2026-10-19) had the
             # model say "ప్లాట్ ధర, రిజిస్ట్రేషన్, పాస్‌బుక్ అన్నీ హామీ".
             (r"నమ్మకం|నమ్మక|రిస్క్|మోసం|ఫ్రాడ్|నిజమేనా|సేఫ్ నా|సేఫా|సురక్షితమేనా|గ్యారంటీ|హామీ",
@@ -162,7 +169,7 @@ CLIENTS: dict[str, dict] = {
             r"బడి|ఎటుబడి|కోసం|కావాల|కావాలి|దగ్గర|దగ్గరలో|పైడి|"
             # Question words: "దేనికి?" (what's the visit for?) was taken as
             # noise on a real call (2026-10-19).
-            r"దేనికి|దీనికి|ఎందుకు|ఏంటి|ఏమిటి|ఏంటండి|ఎవరు|ఏది|ఎలా|ఎప్పుడు|ఎక్కడికి|"
+            r"దేనికి|దీనికి|ఎందుకు|ఏంటి|ఏమిటి|ఏంటండి|ఎవర|ఏది|ఎలా|ఎప్పుడు|ఎక్కడికి|"
             # Trust and "who am I talking to" -- "ఇది నమ్మకమేనా? రిస్క్ ఉంటుందా?",
             # "గవర్నమెంట్ అప్రూవల్ ఉందా?" and "మీరు మనిషా రోబోనా?" were taken as
             # noise on an audit (2026-10-19).
