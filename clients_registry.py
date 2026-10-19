@@ -326,6 +326,16 @@ CLIENTS: dict[str, dict] = {
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
+        # Fixed answers said by the server (regex, line). Next batch / start
+        # date: the admission team has the dates -- the owner's line, with the
+        # connect offer (2026-10-19). After a "no" the offer is left off.
+        "fixed_answers": [
+            (r"(నెక్స్ట్|తర్వాత|తరువాత|కొత్త|న్యూ|next|new)\s*బ్యాచ్|next batch|"
+             r"బ్యాచ్\s*(ఎప్పుడు|ఎప్పటి|ఎప్పటినుంచి|స్టార్ట్|మొదలు|ప్రారంభ|డేట్|తేదీ)|"
+             r"(క్లాసెస్|క్లాస్|కోర్సు|ట్రైనింగ్)\s*(ఎప్పుడు|ఎప్పటి నుంచి|ఎప్పటినుంచి)\s*(స్టార్ట్|మొదలు|ప్రారంభ|స్టార్ట)|"
+             r"ఎప్పుడు (స్టార్ట్|మొదలు) (అవుతుంది|అవుతాయి)|ఎప్పటి నుంచి (బ్యాచ్|క్లాసెస్|క్లాస్)",
+             "తర్వాత బ్యాచ్ వివరాలు మా అడ్మిషన్ టీమ్ చెప్తారండి. కాల్ కనెక్ట్ చేయమంటారా?"),
+        ],
         # Background noise ("ఎలా అయిందో", 2026-10-18) cut the batch answer:
         # under three words never stops the bot mid-sentence.
         "min_interrupt_words": 3,

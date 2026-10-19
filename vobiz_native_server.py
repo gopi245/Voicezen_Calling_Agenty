@@ -3522,6 +3522,10 @@ class CallSession:
                 if re.search(rx_f, text or "", re.I):
                     fixed = line_f
                     break
+        if fixed and _CONNECT_OFFER_RX.search(fixed) and (self._transfer_declined_standing() or self._transfer_requested):
+            # A fixed line carrying the connect offer, after the caller said
+            # no to connecting: keep the answer, drop the offer.
+            fixed = re.sub(r"\s*[^.!?]*కనెక్ట్ చేయమంటార[^.!?]*\?", "", fixed).strip()
         if fixed:
             # A question with one right answer, said by the server: the model
             # gave the site location without JNTU (2026-10-19).
