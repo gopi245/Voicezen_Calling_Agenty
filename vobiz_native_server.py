@@ -298,6 +298,7 @@ _CONNECT_OFFER_RX = re.compile(r"కనెక్ట్ చేయమంటార|
 # banned in the scripts, enforced here: a real call (2026-10-17) ended three
 # answers with "ఇంకా ఏదైనా తెలుసుకోవాలా?" despite the written ban.
 _ANYTHING_ELSE_RX = re.compile(r"ఇంకా ఏ(దైనా|మైనా|వైనా|ం)|ఇంకేమైనా|ఇంకేదైనా|ఇంకేం కావాల|anything else|"
+                               r"ఏదైనా సహాయం కావాల|ఏమైనా సహాయం కావాల|"
                                r"ప్రత్యేకంగా తెలుసుకోవాల|తెలుసుకోవాలనుకుంటున్నార|"
                                r"और कुछ|कुछ और|कोई और सवाल|और कोई सवाल|कोई और प्रश्न", re.I)
 # Words that read as a date or day: a caller answering our connect offer with
@@ -665,6 +666,9 @@ _GOODBYE_PATTERN = re.compile(
         "బై", "బాయ్", "థాంక్", "థ్యాంక్", "ధన్యవాద", "ఉంటాను", r"ఉంటా(?=[\s.,!।]|$)", "పెట్టేస్తా", "పెడతాను", "ఇక చాలు", "అంతే అండి",
         "వద్దు", "అవసరం లేదు", "ఇంట్రెస్ట్ లేదు", "తర్వాత చేస్తా", "తర్వాత మాట్లాడ", "మళ్ళీ చేస్తా", "మళ్ళీ కాల్ చేస్తా",
         "ఉంటా మరి", "ఉంటానండి",
+        # Stems, so "-అండి" forms count too: "నాకు ఇంట్రెస్ట్ లేదండి" and "బిజీగా
+        # ఉన్నాను" were not taken as a no / busy on an audit (2026-10-19).
+        "ఇంట్రెస్ట్ లేద", "ఇంటరెస్ట్ లేద", "ఆసక్తి లేద", "బిజీ",
         # The answer to _END_CHECK's "కాల్ ముగించమంటారా?" (2026-10-18).
         "ముగించండి", "ముగించేయండి", "కట్ చేయండి", "కట్ చేస్తా", "ఏం లేదు", "ఏం లేదండి", "ఏమీ లేదు", "ఏమీ లేదండి", "సందేహం లేదు", "సందేహాలు లేవు",
     ]),
@@ -2469,7 +2473,8 @@ def _looks_like_name(ans: str) -> bool:
     """A plausible name reply: short, after the usual prefixes, and not an
     everyday word -- "ఇది కూల్ అవుతుంది" was taken for a caller's name on a
     real call (2026-10-15) and the real name was never collected."""
-    ans = re.sub(r"^(నా పేరు|పేరు|నేను|my name is|నా నేమ్|మై నేమ్ ఈజ్|మై నేమ్)\s*", "", ans.strip(), flags=re.I)
+    # "మా పేరు లక్ష్మి" too -- it was not taken as a name on an audit (2026-10-19).
+    ans = re.sub(r"^(నా పేరు|మా పేరు|నా పేరేమో|పేరు|నేను|my name is|నా నేమ్|మై నేమ్ ఈజ్|మై నేమ్)\s*", "", ans.strip(), flags=re.I)
     # A name and then a question in one breath -- "గోపికృష్ణ అండి జాబ్ ఇవ్వరా?"
     # on a real SR call (2026-10-18): the name was missed and asked again.
     lead = re.match(r"^(\S+(?:\s\S+)?)\s*(అండి|గారు|,)\s+\S", ans)
@@ -4127,7 +4132,10 @@ class CallSession:
         if not (self.client or {}).get("qualification_lines"):
             return None
         t = (text or "").strip()
-        if not t or not _FEE_ASK_RX.search(t) or re.search(r"శాలరీ|సాలరీ|జీతం|salary", t, re.I):
+        # "ఫీజు ఎక్కువ" is an objection, not a question -- repeating the fee
+        # back sounded dismissive on an audit (2026-10-19).
+        if (not t or not _FEE_ASK_RX.search(t) or re.search(r"శాలరీ|సాలరీ|జీతం|salary", t, re.I)
+                or re.search(r"ఎక్కువ|తగ్గ|డిస్కౌంట్|discount|ఇవ్వలేను|కట్టలేను", t, re.I)):
             return None
         clause = None
         for m in reversed(self.messages):
@@ -4740,7 +4748,7 @@ class CallSession:
                             say = "మీ పేరు చెప్తారండి?"
                     if (say and cp and "ఎప్పుడైనా ఈ నంబర్‌కి కాల్ చేయండి" in say
                             and not _caller_said_goodbye(lastq) and not _really_declines(lastq)
-                            and not re.search(r"బిజీ|ఇంట్రెస్ట్ లేదు|వద్దు|తర్వాత", lastq)):
+                            and not re.search(r"బిజీ|ఇంట్రెస్ట్ లేద|ఇంటరెస్ట్ లేద|ఆసక్తి లేద|వద్దు|తర్వాత", lastq)):
                         # The "call us anytime" goodbye only after a bye / no /
                         # busy: "కూడా లేదు" (a noise fragment) got it on a test.
                         log.info("dropped a call-anytime goodbye -- the caller didn't leave: %r", say)
