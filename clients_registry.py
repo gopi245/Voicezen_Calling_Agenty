@@ -29,12 +29,14 @@ CLIENTS: dict[str, dict] = {
         # campaigns dial out as DIAL_FROM_NUMBER until it gets a new one
         # (accepted by the owner, "no problem for now").
         "client_id": "vedantha_vanam",
-        # The client's dashboard row id -- set once the account's SQL has
-        # run; the env var overrides for a re-made account.
+        # Customer #25: Vedantha Vanam's own dashboard account
+        # (ngcekranthi@gmail.com, Starter plan), created 2026-10-19 -- calls
+        # bill its 250 monthly minutes. The env var overrides if the account
+        # is ever re-made.
         "customer_id": (
             int(os.environ["VEDANTHA_VANAM_CUSTOMER_ID"])
             if os.getenv("VEDANTHA_VANAM_CUSTOMER_ID", "").strip().isdigit()
-            else None
+            else 25
         ),
         "dial_from": "+918071580257",
         # The newer call engine, explicitly: engine selection used to ride on
