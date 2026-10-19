@@ -4673,6 +4673,11 @@ class CallSession:
                         await queue.put(say)
                         asked = True  # stop reading the stream; nothing else is spoken
                         break
+                    if say and not self._legacy_engine and re.search(r"[<>\[\]{}]|THEIR (DATE|DAY|BRANCH)", say):
+                        # Placeholder marks copied from the scripts must never be
+                        # spoken: "సరేనండి, <వచ్చే వారం> నుంచి" (audit, 2026-10-19).
+                        say = re.sub(r"\s*THEIR (DATE|DAY|BRANCH)\s*", " ", say)
+                        say = re.sub(r"[<>\[\]{}]", "", say).replace("  ", " ").strip()
                     if say and not self._legacy_engine and say.endswith("?") and _ANYTHING_ELSE_RX.search(say):
                         log.info("dropped an 'anything else?' question: %r", say)
                         continue
