@@ -3469,6 +3469,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        size_price = None if self._legacy_engine else self._size_price_reply(text)
+        if size_price:
+            self.messages.append({"role": "assistant", "content": size_price})
+            log.info("bot: %s  (size price computed by the server)", size_price)
+            self._speak_task = asyncio.create_task(self._speak(size_price, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         price_obj = None if self._legacy_engine else self._price_objection_reply(text)
         if price_obj:
             self.messages.append({"role": "assistant", "content": price_obj})
@@ -3888,6 +3897,37 @@ class CallSession:
                     f"కాంట్రాక్ట్ జాబ్స్‌లో హెల్ప్ చేస్తామండి. {tail}")
         return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
                 + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
+
+    def _size_price_reply(self, text: str) -> str | None:
+        """Clients with "price_per_cent": the price for a size the caller
+        names ("50 సెంట్లు అయితే ఎంత?", "ఎకరం ఎంత?"), computed by the server.
+        A real call (2026-10-19) asked for 50 cents four times and heard the
+        12.5-cent price every time, then the bot hung up on the caller."""
+        ppc = (self.client or {}).get("price_per_cent")
+        t = (text or "").strip()
+        if not ppc or not t or not re.search(r"ఎంత|రేటు|రేట్|ధర|కాస్ట్|price|cost|అయితే", t, re.I):
+            return None
+        cents = None
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(సెంట్|సెంటు|సెంటర్|సెంట్ల|cents?)", t, re.I)
+        if m:
+            cents = float(m.group(1))
+        else:
+            for w, v in (("అర ఎకర", 50), ("ఎకర", 100), ("పాతిక", 25), ("యాభై", 50), ("డెబ్బై ఐదు", 75), ("వంద", 100)):
+                if w in t and (w.endswith("ఎకర") or re.search(w + r"\s*(సెంట్|సెంటు|సెంటర్|సెంట్ల)", t)):
+                    cents = v
+                    break
+        if not cents or cents == 12.5:
+            return None
+        lakh_words = {14: "పద్నాలుగు", 21: "ఇరవై ఒకటి", 28: "ఇరవై ఎనిమిది", 35: "ముప్పై ఐదు",
+                      42: "నలభై రెండు", 49: "నలభై తొమ్మిది", 56: "యాభై ఆరు", 112: "నూట పన్నెండు"}
+        cent_words = {25: "పాతిక", 37.5: "ముప్పై ఏడున్నర", 50: "యాభై", 62.5: "అరవై రెండున్నర", 75: "డెబ్బై ఐదు",
+                      87.5: "ఎనభై ఏడున్నర", 100: "వంద", 200: "రెండు వందల"}
+        lakhs = cents * ppc / 100000
+        if lakhs == int(lakhs) and int(lakhs) in lakh_words and cents in cent_words:
+            return (f"{cent_words[cents]} సెంట్లకి {lakh_words[int(lakhs)]} లక్షల రూపాయలండి, సెంటుకి యాభై ఆరు వేల "
+                    "రూపాయల చొప్పున. ఎన్ని ప్లాట్లు కావాలో సైట్ విజిట్‌లో మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
+        return ("సెంటుకి యాభై ఆరు వేల రూపాయలండి. మీరు అడిగిన సైజ్‌కి మొత్తం ఎంతవుతుందో సైట్ విజిట్‌లో "
+                "మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
 
     def _price_objection_reply(self, text: str) -> str | None:
         """Clients with "price_objection": the caller names a lower amount,
@@ -4531,16 +4571,33 @@ class CallSession:
                         # question, demo 2026-10-19) -- never ask it again.
                         log.info("dropped a visit-day question -- the day is known (%s): %r", vday, say)
                         continue
+                    cp = (self.client or {}).get("closing_phrase")
+                    lastq = self._last_caller_words() or ""
+                    if (say and cp and cp not in say and re.search(r"నమస్కారం|ధన్యవాదాలు|వివరాలు పంపిస్తారు", say)
+                            and not _caller_said_goodbye(lastq)
+                            and ("?" in lastq or re.search(r"ఎంత|ఎక్కడ|ఎలా|ఏంటి|ఎప్పుడు|అయితే|ఉందా|ఇస్తారా|చెప్పండి", lastq))):
+                        # A goodbye while the caller is ASKING: "50 సెంట్లు
+                        # అయితే..." got "మా టీమ్ మీకు అన్ని వివరాలు పంపిస్తారు.
+                        # ధన్యవాదాలు, నమస్కారం!" and the customer was lost
+                        # (2026-10-19).
+                        log.info("dropped a goodbye -- the caller is still asking: %r", say)
+                        continue
                     day_conf = (re.match(r"^సరేనండి, (.{1,40}?) అండి\.$", say)
                                 if say and (self.client or {}).get("closing_phrase") else None)
                     if day_conf:
-                        lastc_d = self._last_caller_words() or ""
-                        words_d = [w for w in day_conf.group(1).split() if w not in ("ఈ", "వచ్చే")]
-                        if words_d and not any(w[:3] in lastc_d for w in words_d):
-                            # The caller never said that day: "ఆ ఓకే" to
-                            # "శనివారం లేదా ఆదివారం?" was booked as Saturday on a
-                            # real call (2026-10-19).
-                            log.info("replaced a visit day the caller never said: %r", say)
+                        # Every caller turn counts, not just the latest: "ఒక వారం
+                        # పడుతుంది" was confirmed, then wrongly un-done when the
+                        # next turn was the caller's name (2026-10-19).
+                        all_c = " ".join(m["content"] or "" for m in self.messages if m["role"] == "user")
+                        phrase_d = day_conf.group(1)
+                        words_d = [w for w in phrase_d.split() if w not in ("ఈ", "వచ్చే")]
+                        said_d = not words_d or any(w[:3] in all_c for w in words_d)
+                        vrx = (self.client or {}).get("visit_day_rx")
+                        is_day = not vrx or bool(re.search(vrx, phrase_d, re.I))
+                        if not said_d or not is_day:
+                            # A day the caller never said ("ఆ ఓకే" -> Saturday),
+                            # or garbage echoed as one ("వచ్చే ఆ జవా స్కూల్").
+                            log.info("replaced a visit day that isn't the caller's day: %r", say)
                             say = "మీకు ఏ రోజు వీలవుతుందో చెప్తారా అండి?"
                     if (say and not self._legacy_engine and (self.client or {}).get("branch_ask")
                             and _PLACEMENT_PROMISE_RX.search(say) and "మాత్రమే" not in say

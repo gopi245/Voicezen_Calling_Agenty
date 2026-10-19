@@ -109,6 +109,10 @@ CLIENTS: dict[str, dict] = {
         "sentence_fixes": [
             (r"రెండు రెట్లు|రెండు వంద|రెండు వందల (శ్రీగంధం )?మొక్క|యాభై శ్రీగంధం మొక్కలు పాతిక",
              "పాతిక సెంట్లకు వంద శ్రీగంధం మొక్కలండి."),
+            # The passbook timing is never invented: "పాస్‌బుక్ రిజిస్ట్రేషన్
+            # తర్వాత ఇస్తాం" was said twice on a real call despite the script.
+            (r"పాస్‌?బుక్.{0,30}(తర్వాత|వెంటనే|రోజుల్లో|నెలలో|వారంలో)",
+             "పాతిక సెంట్లు రిజిస్టర్ చేసి పాస్‌బుక్ ఇస్తారండి."),
             # No suggested days -- the visit day is the caller's own (owner,
             # 2026-10-19: "శనివారం లేదా ఆదివారం" was being offered).
             (r"శనివారం లేదా ఆదివారం|ఆదివారం లేదా శనివారం|శనివారమా,? ఆదివారమా|వీకెండ్‌లో రాగలరా|వీకెండ్ వీలవుతుందా",
@@ -117,7 +121,11 @@ CLIENTS: dict[str, dict] = {
         # A visit-day word in the caller's words: the day is settled and the
         # day question is not asked again.
         "visit_day_rx": r"రేపు|రేపై|ఎల్లుండి|ఆదివారం|సోమవారం|మంగళవారం|బుధవారం|గురువారం|శుక్రవారం|శనివారం|"
-                        r"వచ్చే వారం|ఈ వారం|నెక్స్ట్ వీక్|tomorrow|sunday|monday|saturday",
+                        r"వచ్చే వారం|ఈ వారం|ఒక వారం|రెండు వారా|వారం తర్వాత|వారం రోజుల|నెక్స్ట్ వీక్|"
+                        r"వచ్చే నెల|నెల తర్వాత|tomorrow|sunday|monday|saturday",
+        # The price per cent, for the server's size answers ("50 సెంట్లు
+        # అయితే ఎంత?" -> ఇరవై ఎనిమిది లక్షలు).
+        "price_per_cent": 56000,
         # Numbers the model writes as digits, spoken as words.
         "speech_fixes": {"పన్నెండున్నర": "పన్నెండు న్నర",
                          "25 సెంట్ల": "పాతిక సెంట్ల", "25 సెంట్లు": "పాతిక సెంట్లు", "12.5 సెంట్ల": "పన్నెండు న్నర సెంట్ల",
