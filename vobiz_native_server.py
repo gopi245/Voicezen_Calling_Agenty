@@ -3453,6 +3453,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        price_obj = None if self._legacy_engine else self._price_objection_reply(text)
+        if price_obj:
+            self.messages.append({"role": "assistant", "content": price_obj})
+            log.info("bot: %s  (price objection #%d)", price_obj, self._price_objection_count)
+            self._speak_task = asyncio.create_task(self._speak(price_obj, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         fee_again = None if self._legacy_engine else self._fee_repeat_reply(text)
         if fee_again:
             self.messages.append({"role": "assistant", "content": fee_again})
@@ -3863,6 +3872,21 @@ class CallSession:
                     f"కాంట్రాక్ట్ జాబ్స్‌లో హెల్ప్ చేస్తామండి. {tail}")
         return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
                 + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
+
+    def _price_objection_reply(self, text: str) -> str | None:
+        """Clients with "price_objection": the caller names a lower amount,
+        says they can't pay, or asks for a discount -- the server answers,
+        never the model. A real call (2026-10-19): "నాకు సిక్స్ లాక్స్
+        కావాలండి, సెవెన్ లాక్స్ నేను ఇవ్వలేను" got "సరే అండి" -- heard as
+        agreeing to ₹6 lakh. 1st: the price stays, the team explains
+        payment; 2nd on: acknowledge the budget, the team will call."""
+        po = (self.client or {}).get("price_objection")
+        t = (text or "").strip()
+        if not po or not t or not re.search(po["rx"], t, re.I):
+            return None
+        n = getattr(self, "_price_objection_count", 0) + 1
+        self._price_objection_count = n
+        return po["first"] if n == 1 else po["again"]
 
     def _visit_day_known(self) -> str | None:
         """The visit day the caller said (clients_registry "visit_day_rx"),

@@ -80,6 +80,20 @@ CLIENTS: dict[str, dict] = {
         # The visit isn't pushed until the benefits were told: an early
         # "ఏ రోజు?" becomes the purpose question (client feedback 2026-10-19).
         "benefit_markers": ["మంచి అవకాశం", "అనుకూలమైన భూమి"],
+        # A lower amount / can't pay / discount ask is answered by the server
+        # -- "సిక్స్ లాక్స్ కావాలి, సెవెన్ ఇవ్వలేను" got "సరే అండి" (heard as
+        # agreeing to ₹6 lakh) on a real call, 2026-10-19. The price never
+        # moves on the phone; the team handles payment.
+        "price_objection": {
+            "rx": r"(సిక్స్|ఫైవ్|ఆరు|ఐదు|నాలుగు|six|five|(?<![0-9])[1-6])\s*(లాక్స్|లాక్|లక్ష|లక్షలు|లక్షల|lakhs?|lacs?)|"
+                  r"ఇవ్వలేను|ఇవ్వలేము|కట్టలేను|కట్టలేము|పెట్టలేను|తగ్గించ|తగ్గిస్త|తగ్గదా|తక్కువ చేయ|"
+                  r"ఎక్కువ (ధర|రేటు)|(ధర|రేటు|రేట్) ఎక్కువ|ఖరీదు|డిస్కౌంట్|discount|బేరం|ఆఫర్ ఉందా|"
+                  r"అంత (డబ్బు|అమౌంట్) లేదు|బడ్జెట్ (లేదు|తక్కువ)",
+            "first": "ధర పన్నెండు న్నర సెంట్ల ప్లాట్‌కి ఏడు లక్షల రూపాయలేనండి. పేమెంట్ ఆప్షన్స్, ఏమైనా ఆఫర్స్ ఉంటే "
+                     "సైట్ విజిట్‌లో మా టీమ్ వివరంగా చెప్తారండి. ఒకసారి సైట్ చూసి నిర్ణయం తీసుకోవచ్చు.",
+            # Never a refusal either ("తగ్గించలేము" is banned -- owner, 2026-10-18).
+            "again": "అర్థమైందండి. మీ బడ్జెట్ గురించి మా టీమ్ మీకు కాల్ చేసి పేమెంట్ ఆప్షన్స్ చెప్తారండి.",
+        },
         "purpose_question": "మీరు పెట్టుబడి కోసం చూస్తున్నారా, లేక భవిష్యత్తులో వ్యవసాయం కోసం భూమి కావాలా అండి?",
         # Known-false sentences swapped before they are spoken: a demo
         # doubled the plant count ("రెండు వంద శ్రీగంధం మొక్కలు", 2026-10-19).
