@@ -4081,11 +4081,18 @@ class CallSession:
                 # సివిల్ కాదు" three times, and the replay re-asked the whole
                 # qualification.
                 corrected = bool(re.search(r"కాదు|కాదండి|కాద", last))
+                # Only an actual question gets "it depends on the branch": a
+                # branch answer the server missed ("ట్రిబుల్ ఈ") got that line
+                # twice on a real call (2026-10-19).
+                asked_q = bool("?" in last or _PLACEMENT_ASK_RX.search(last)
+                               or re.search(r"శాలరీ|సాలరీ|జీతం|ఎంత|ఎక్కడ|ఇస్తారా|ఉందా", last))
                 return [{"role": "system", "content": (
                     "Their qualification is known but their BRANCH is not. "
                     + ("They just CORRECTED you: start with \"సారీ అండి.\" " if corrected else "")
-                    + ("If they asked something (job, placement, salary), first say \"అది మీ బ్రాంచ్ బట్టి ఉంటుందండి.\" "
-                       if not corrected else "")
+                    + ("They asked something: first say \"అది మీ బ్రాంచ్ బట్టి ఉంటుందండి.\" "
+                       if asked_q and not corrected else "")
+                    + ("If their words sound like a branch name you don't recognise, ask them to say it once more "
+                       "simply: \"సారీ అండి, ఈఈఈ నా, లేక వేరే బ్రాంచా?\" " if not asked_q and not corrected else "")
                     + "Then ask ONLY: \"మీ బ్రాంచ్ ఏంటండి? ఈఈఈ నా, వేరే బ్రాంచా?\" -- never guess a branch, never ask "
                       "the whole qualification again, and never repeat a misheard word back (say బీటెక్ / డిప్లొమా).")}]
         line = (next((ln for rx, ln in quals if re.search(rx, qual_text, re.I)), None)

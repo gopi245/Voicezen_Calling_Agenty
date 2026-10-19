@@ -124,7 +124,10 @@ CLIENTS: dict[str, dict] = {
             # line and the model quoted the practicals fee.
             "needs": r"బీటెక్|బి\.? ?టెక్|b\.? ?tech|డీటెక్|డి టెక్|వీటెక్|బీట్ ఎక్|బీ టెక్|బిటెక్|"
                      r"డిప్లొమా|డిప్లమా|టెప్లమా|diploma|పాలిటెక్నిక్|polytechnic|ఇంజనీరింగ్|engineering",
-            "given": r"ఈఈఈ|ఈ ఈ ఈ|\bEEE\b|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
+            # Spoken EEE too: "ట్రిబుల్ ఈ", "త్రిబి", "3BE" were asked again
+            # and again on a real call (2026-10-19).
+            "given": r"ఈఈఈ|ఈ ఈ ఈ|\bEEE\b|ట్రిబుల్ ?ఈ|ట్రిపుల్ ?ఈ|త్రిబుల్ ?ఈ|త్రిపుల్ ?ఈ|త్రిబి|ట్రిబి|"
+                     r"triple ?e|\b3 ?B?E\b|ఎలక్ట్రికల్|electrical|మెకానికల్|మెకానిక్|mechanical|సివిల్|civil|సీఎస్ఈ|సీ ఎస్ ఈ|"
                      r"సీఎస్|CSE|కంప్యూటర్|computer|ఈసీఈ|ఈ సీ ఈ|ఈసీ|ఈ సీ|ECE|\bEC\b|ఐటీ|ఐ టీ|\bIT\b|ఆటోమొబైల్|"
                      r"automobile|కెమికల్|chemical|ఏరోనాటికల్|బయోటెక్|బయో టెక్|బ్రాంచ్",
             "line": "ఏ బ్రాంచ్ అండి? ఈఈఈ నా, లేక వేరే బ్రాంచా?",
