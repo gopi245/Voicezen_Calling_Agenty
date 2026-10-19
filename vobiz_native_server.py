@@ -3864,6 +3864,24 @@ class CallSession:
         return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
                 + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
 
+    def _visit_day_known(self) -> str | None:
+        """The visit day the caller said (clients_registry "visit_day_rx"),
+        from any of their turns -- a day inside a longer reply counts. None
+        until they say one."""
+        rx = (self.client or {}).get("visit_day_rx")
+        if not rx:
+            return None
+        for m in reversed(self.messages):
+            if m["role"] != "user":
+                continue
+            t = m["content"] or ""
+            if re.search(r"కాదు|కుదరదు|రాలేను|వీలు కాదు", t) and not re.search(r"(రేపు|ఆదివారం|శనివారం).{0,15}(ఓకే|వస్తా|కుదురు)", t):
+                continue
+            hit = re.search(rx, t, re.I)
+            if hit:
+                return hit.group(0)
+        return None
+
     def _fee_repeat_reply(self, text: str) -> str | None:
         """A fee question once the fee was already spoken -- "అడ్మిషన్ ఫీజు?",
         a misheard "పీజ్ అండి" / "ఏజ్ ఎంత అన్నారు": the server repeats the
@@ -4146,6 +4164,9 @@ class CallSession:
                 known.append(f"their name ({ans.rstrip('.')})")
             elif "ఎప్పటి నుంచి" in pq or "कब आ सकते" in pq or "कब आ सकती" in pq:
                 known.append(f"when they can start / visit ({ans.rstrip('.')})")
+        vday_k = self._visit_day_known()
+        if vday_k:
+            known.append(f"the site-visit day ({vday_k}) -- the next step is their name, then the close")
         if (self.client or {}).get("branch_ask"):
             track_k, branch_k = self._student_profile()
             if branch_k:
@@ -4443,6 +4464,13 @@ class CallSession:
                         if not stripped:
                             continue  # the sentence was only "అవునండి."
                         say = stripped
+                    vday = self._visit_day_known()
+                    if (say and vday and say.endswith("?")
+                            and re.search(r"ఏ రోజు|శనివారమా|శనివారం లేదా ఆదివారం|ఎప్పుడు రావ", say)):
+                        # The caller already gave the day ("రేపు ఓకే" inside a
+                        # question, demo 2026-10-19) -- never ask it again.
+                        log.info("dropped a visit-day question -- the day is known (%s): %r", vday, say)
+                        continue
                     day_conf = (re.match(r"^సరేనండి, (.{1,40}?) అండి\.$", say)
                                 if say and (self.client or {}).get("closing_phrase") else None)
                     if day_conf:

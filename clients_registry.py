@@ -77,6 +77,16 @@ CLIENTS: dict[str, dict] = {
         # until the client's number arrives (owner, 2026-10-19).
         "lead_alert_whatsapp": "",
         "lead_alert_title": "Vedantha Vanam - site visit lead",
+        # Known-false sentences swapped before they are spoken: a demo
+        # doubled the plant count ("రెండు వంద శ్రీగంధం మొక్కలు", 2026-10-19).
+        "sentence_fixes": [
+            (r"రెండు రెట్లు|రెండు వంద|రెండు వందల (శ్రీగంధం )?మొక్క|యాభై శ్రీగంధం మొక్కలు పాతిక",
+             "పాతిక సెంట్లకు వంద శ్రీగంధం మొక్కలండి."),
+        ],
+        # A visit-day word in the caller's words: the day is settled and the
+        # day question is not asked again.
+        "visit_day_rx": r"రేపు|రేపై|ఎల్లుండి|ఆదివారం|సోమవారం|మంగళవారం|బుధవారం|గురువారం|శుక్రవారం|శనివారం|"
+                        r"వచ్చే వారం|ఈ వారం|నెక్స్ట్ వీక్|tomorrow|sunday|monday|saturday",
         # Numbers the model writes as digits, spoken as words.
         "speech_fixes": {"పన్నెండున్నర": "పన్నెండు న్నర",
                          "25 సెంట్ల": "పాతిక సెంట్ల", "25 సెంట్లు": "పాతిక సెంట్లు", "12.5 సెంట్ల": "పన్నెండు న్నర సెంట్ల",
