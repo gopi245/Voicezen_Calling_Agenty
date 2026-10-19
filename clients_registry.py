@@ -20,27 +20,29 @@ import os
 
 CLIENTS: dict[str, dict] = {
     "+918071580257": {
-        "client_id": "voicezen",
-        # VoiceZen's own line, for enquiries from voicezentech.com.
-        # customer_id comes from .env because it is a dashboard row id, not a
-        # code constant -- set VOICEZEN_CUSTOMER_ID once the VoiceZen customer
-        # exists. Left unset, inbound calls here still connect and speak the
-        # right script (reporting keys off dialed_number, not this), but two
-        # things silently don't happen: the out-of-minutes check is skipped,
-        # and an outbound campaign for this customer can't be matched back to
-        # this number, so it dials out as DIAL_FROM_NUMBER instead.
+        # Vedantha Vanam's line since 2026-10-19 (owner's ask): the number
+        # moved to the client's own account (ngcekranthi@gmail.com) and the
+        # VoiceZen hooks went with the old client_id -- the website-lead
+        # outbound forcing and the lead ring-back path both key on
+        # client_id == "voicezen", so neither touches this number any more.
+        # VoiceZen itself now has NO number: its website callbacks and
+        # campaigns dial out as DIAL_FROM_NUMBER until it gets a new one
+        # (accepted by the owner, "no problem for now").
+        "client_id": "vedantha_vanam",
+        # The client's dashboard row id -- set once the account's SQL has
+        # run; the env var overrides for a re-made account.
         "customer_id": (
-            int(os.environ["VOICEZEN_CUSTOMER_ID"])
-            if os.getenv("VOICEZEN_CUSTOMER_ID", "").strip().isdigit()
+            int(os.environ["VEDANTHA_VANAM_CUSTOMER_ID"])
+            if os.getenv("VEDANTHA_VANAM_CUSTOMER_ID", "").strip().isdigit()
             else None
         ),
         "dial_from": "+918071580257",
+        # The newer call engine, explicitly: engine selection used to ride on
+        # client_id == "voicezen", which this entry no longer carries.
+        "engine": "new",
         # INBOUND calls hear the Vedantha Vanam sandalwood-farmland script
         # (owner's request, 2026-10-18; replaced the Hindi real-estate demo,
         # script_realestate_hi, which stays in agent/ for rollback).
-        # Outbound website-lead callbacks and dashboard demo calls still run
-        # VoiceZen's own Telugu pitch -- server.py forces Telugu settings on
-        # those paths regardless of this entry.
         "prompt_module": "script_vedantha_vanam",
         # A faint office behind the whole call. Re-enabled 2026-10-15 after
         # the dead-air cause was fixed (a stalled TTS request had no

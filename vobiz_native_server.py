@@ -935,7 +935,8 @@ async def _warm_voicezen_greeting():
     which took 3.4s to answer the first call after the 2026-09-23 restart."""
     try:
         client, greeting, _ = next(
-            (load_client_script(num) for num, c in CLIENTS_REGISTRY.items() if c.get("client_id") == "voicezen"),
+            (load_client_script(num) for num, c in CLIENTS_REGISTRY.items()
+             if c.get("client_id") == "voicezen" or c.get("engine") == "new"),
             (None, None, None))
         if not client:
             return
