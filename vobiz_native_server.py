@@ -58,6 +58,14 @@ sys.path.insert(0, str(HERE.parent / "agent"))
 load_dotenv(HERE / ".env")
 
 import voicezen  # noqa: E402
+
+# Optional: RNNoise noise cancellation (clients_registry "noise_cancellation").
+# Missing packages only switch the feature off -- the server still starts.
+try:  # noqa: E402
+    import numpy as np
+    from pyrnnoise import RNNoise as _RNNoise
+except Exception:  # pragma: no cover
+    np, _RNNoise = None, None
 from clients_registry import dial_from_for_customer  # noqa: E402
 from clients_registry import lookup as lookup_client  # noqa: E402
 from clients_registry import CLIENTS as CLIENTS_REGISTRY  # noqa: E402
@@ -2988,6 +2996,21 @@ class CallSession:
             self._amb_task = asyncio.create_task(self._ambience_loop())
             log.info("background noise on (%s)", noise)
 
+        # Noise cancellation on the caller's audio before transcription
+        # (clients_registry "noise_cancellation": "rnnoise"), a trial on
+        # Vedantha Vanam from 2026-10-19: tests showed ~+3 points on traffic,
+        # ~-3 on people talking nearby. Logged per call so real calls can be
+        # compared; set the registry value to None to switch it off.
+        self._rnnoise, self._rn_cpu_ms, self._rn_chunks = None, 0.0, 0
+        if (self.client or {}).get("noise_cancellation") == "rnnoise" and not self._legacy_engine:
+            if _RNNoise is None:
+                log.warning("noise cancellation requested but pyrnnoise isn't installed -- raw audio")
+            else:
+                self._rnnoise = _RNNoise(STT_SAMPLE_RATE)
+                log.info("noise cancellation ON (rnnoise) for client '%s'", self.client.get("client_id"))
+        else:
+            log.info("noise cancellation off")
+
         instructions = _instructions_no_livekit(instructions)
         # VOICEZEN TEST -- VoiceZen's own rules (always Telugu, one question
         # per reply, pricing, mishearing, endings) live in script_voicezen.py,
@@ -3027,7 +3050,24 @@ class CallSession:
 
     async def on_media(self, pcm16_b64: str):
         raw = base64.b64decode(pcm16_b64)
+        # The recording keeps the caller's ORIGINAL audio, so calls with and
+        # without noise cancellation can be compared afterwards.
         self._caller_audio_chunks.append(raw)
+        rn = getattr(self, "_rnnoise", None)
+        if rn is not None:
+            try:
+                t0 = time.perf_counter()
+                x = np.frombuffer(raw, np.int16).reshape(1, -1)
+                out = b"".join(d.astype(np.int16).tobytes() for _, d in rn.denoise_chunk(x, partial=False))
+                self._rn_cpu_ms += (time.perf_counter() - t0) * 1000
+                self._rn_chunks += 1
+                if out:
+                    await self.stt.send_audio(out)
+                return
+            except Exception:
+                # Never lose the caller over the denoiser: fall back to raw.
+                log.exception("rnnoise failed -- sending the caller's raw audio from now on")
+                self._rnnoise = None
         await self.stt.send_audio(raw)
 
     async def _on_speech_start(self):
@@ -5777,6 +5817,10 @@ async def media(ws: WebSocket):
     except WebSocketDisconnect:
         log.info("vobiz websocket closed (call ended)")
     finally:
+        if getattr(session, "_rn_chunks", 0):
+            # One line per call for comparing calls with / without it.
+            log.info("noise cancellation summary: rnnoise on, %d chunks, %.2f ms CPU per 20 ms chunk",
+                     session._rn_chunks, session._rn_cpu_ms / session._rn_chunks)
         await session.close()
 
 

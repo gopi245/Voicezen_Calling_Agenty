@@ -46,6 +46,9 @@ CLIENTS: dict[str, dict] = {
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
         "background_noise": None,  # off 2026-10-19: the ambience clip contains real speech (owner's ask)
+        # SWITCH: RNNoise noise cancellation on the caller's audio -- a trial
+        # from 2026-10-19 (owner's ask). Set to None to turn it off.
+        "noise_cancellation": "rnnoise",
         # Telugu only, like SR Electrical.
         "stt_language": "te-IN",
         "tts_language": "te",
