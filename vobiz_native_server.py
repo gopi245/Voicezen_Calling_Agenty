@@ -3929,8 +3929,11 @@ class CallSession:
         closing = (self.client or {}).get("closing_phrase")
         if not closing:
             return False
-        prev = next((m["content"] for m in reversed(self.messages[:-1]) if m["role"] == "assistant"), "") or ""
-        if re.sub(r"[‌‍]", "", closing) not in re.sub(r"[‌‍]", "", prev):
+        # The closing line in any of our last three replies -- a stray word
+        # after it got a bare "సరేనండి.", and the caller's "థాంక్యూ" after that
+        # then got the generic goodbye instead of this one (2026-10-19).
+        recent = [m["content"] or "" for m in reversed(self.messages[:-1]) if m["role"] == "assistant"][:3]
+        if not any(re.sub(r"[‌‍]", "", closing) in re.sub(r"[‌‍]", "", p) for p in recent):
             return False
         t = (text or "").strip()
         if not t or "?" in t:
