@@ -80,6 +80,15 @@ CLIENTS: dict[str, dict] = {
         # The visit isn't pushed until the benefits were told: an early
         # "ఏ రోజు?" becomes the purpose question (client feedback 2026-10-19).
         "benefit_markers": ["మంచి అవకాశం", "అనుకూలమైన భూమి"],
+        # Questions answered with a fixed line by the server (regex, line).
+        # Location: the model gave only Narasaraopet; JNTU (7 km) is the
+        # owner's lead point (2026-10-19). "సైజ్ ఎక్కడ" is a misheard "సైట్".
+        "fixed_answers": [
+            (r"(సైట్|సైజ్|ల్యాండ్|భూమి|ప్రాజెక్ట్|ప్లేస్)\s*(ఎక్కడ|ఎటు)|ఎక్కడ ఉంది|లొకేషన్|location|"
+             r"ఎంత దూరం|ఎన్ని కిలోమీటర్|దగ్గర్లో ఏమ|దగ్గరలో ఏమ|అడ్రస్",
+             "మా సైట్ సంతమాగులూరు గ్రామం, బాపట్ల జిల్లా పరిసరాల్లో ఉందండి. జె ఎన్ టి యు కి ఏడు కిలోమీటర్లు, "
+             "కోటప్పకొండకి పది కిలోమీటర్లు, నరసరావుపేట టౌన్‌కి పద్నాలుగు కిలోమీటర్లు. లొకేషన్ మీకు ఈ నంబర్‌కి పంపిస్తామండి."),
+        ],
         # A lower amount / can't pay / discount ask is answered by the server
         # -- "సిక్స్ లాక్స్ కావాలి, సెవెన్ ఇవ్వలేను" got "సరే అండి" (heard as
         # agreeing to ₹6 lakh) on a real call, 2026-10-19. The price never
@@ -100,6 +109,10 @@ CLIENTS: dict[str, dict] = {
         "sentence_fixes": [
             (r"రెండు రెట్లు|రెండు వంద|రెండు వందల (శ్రీగంధం )?మొక్క|యాభై శ్రీగంధం మొక్కలు పాతిక",
              "పాతిక సెంట్లకు వంద శ్రీగంధం మొక్కలండి."),
+            # No suggested days -- the visit day is the caller's own (owner,
+            # 2026-10-19: "శనివారం లేదా ఆదివారం" was being offered).
+            (r"శనివారం లేదా ఆదివారం|ఆదివారం లేదా శనివారం|శనివారమా,? ఆదివారమా|వీకెండ్‌లో రాగలరా|వీకెండ్ వీలవుతుందా",
+             "మీకు ఏ రోజు వీలవుతుందో చెప్తారా అండి?"),
         ],
         # A visit-day word in the caller's words: the day is settled and the
         # day question is not asked again.

@@ -3453,6 +3453,22 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        fixed = None
+        if not self._legacy_engine:
+            for rx_f, line_f in ((self.client or {}).get("fixed_answers") or ()):
+                if re.search(rx_f, text or "", re.I):
+                    fixed = line_f
+                    break
+        if fixed:
+            # A question with one right answer, said by the server: the model
+            # gave the site location without JNTU (2026-10-19).
+            self.messages.append({"role": "assistant", "content": fixed})
+            log.info("bot: %s  (fixed answer)", fixed)
+            self._speak_task = asyncio.create_task(self._speak(fixed, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         price_obj = None if self._legacy_engine else self._price_objection_reply(text)
         if price_obj:
             self.messages.append({"role": "assistant", "content": price_obj})
@@ -4510,7 +4526,7 @@ class CallSession:
                             say = pq
                     vday = self._visit_day_known()
                     if (say and vday and say.endswith("?")
-                            and re.search(r"ఏ రోజు|శనివారమా|శనివారం లేదా ఆదివారం|ఎప్పుడు రావ", say)):
+                            and re.search(r"ఏ రోజు|శనివారమా|శనివారం లేదా ఆదివారం|ఎప్పుడు రావ|ఏ రోజు వీలవుతుందో", say)):
                         # The caller already gave the day ("రేపు ఓకే" inside a
                         # question, demo 2026-10-19) -- never ask it again.
                         log.info("dropped a visit-day question -- the day is known (%s): %r", vday, say)
@@ -4525,7 +4541,7 @@ class CallSession:
                             # "శనివారం లేదా ఆదివారం?" was booked as Saturday on a
                             # real call (2026-10-19).
                             log.info("replaced a visit day the caller never said: %r", say)
-                            say = "శనివారమా, ఆదివారమా అండి?"
+                            say = "మీకు ఏ రోజు వీలవుతుందో చెప్తారా అండి?"
                     if (say and not self._legacy_engine and (self.client or {}).get("branch_ask")
                             and _PLACEMENT_PROMISE_RX.search(say) and "మాత్రమే" not in say
                             and self._student_profile()[0] == "practicals"):
