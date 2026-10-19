@@ -4762,6 +4762,27 @@ class CallSession:
                         # (2026-10-19).
                         log.info("dropped a goodbye -- the caller is still asking: %r", say)
                         continue
+                    if say and not self._legacy_engine and (self.client or {}).get("qualification_lines"):
+                        jd = re.search(r"(?:సరేనండి,?\s*|మీరు\s+)(.{2,30}?)\s+నుంచి", say)
+                        if jd:
+                            all_cj = " ".join(m["content"] or "" for m in self.messages if m["role"] == "user")
+                            words_j = [w for w in jd.group(1).split() if w not in ("మీరు", "గారు", "అండి")]
+                            if words_j and not any(w[:3] in all_cj for w in words_j):
+                                # A joining date the student never said: "సాయంత్రం
+                                # ఆన్లైన్" got "మీరు వచ్చే వారం నుంచి జాయిన్
+                                # అవ్వాలనుకుంటున్నారు" on an audit (2026-10-19).
+                                log.info("dropped a joining date the student never said: %r", say)
+                                continue
+                    if (say and (self.client or {}).get("closing_phrase") and say.endswith("?")
+                            and re.search(r"ఏ రోజు|రోజు సౌకర్యంగా|ఏ రోజు వీలవుతుందో", say)):
+                        prev_v = next((m["content"] for m in reversed(self.messages[:-1])
+                                       if m["role"] == "assistant"), "") or ""
+                        asked_other = ("?" in lastq or len(_words(lastq)) >= 3) and not _is_backchannel(lastq)
+                        if re.search(r"ఏ రోజు|రోజు సౌకర్యంగా|ఏ రోజు వీలవుతుందో", prev_v) and asked_other:
+                            # Not on two replies in a row: an audit (2026-10-19)
+                            # tacked the visit-day question onto four answers.
+                            log.info("dropped a back-to-back visit-day question: %r", say)
+                            continue
                     day_conf = (re.match(r"^సరేనండి, (.{1,40}?) అండి\.$", say)
                                 if say and (self.client or {}).get("closing_phrase") else None)
                     if day_conf:
