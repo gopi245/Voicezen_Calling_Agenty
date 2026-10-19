@@ -558,6 +558,11 @@ _END_CHECK = {"Telugu": "సరేనండి, ఇంకేమైనా సం�
 
 # A reply opening on a bare yes, and a caller question that can't take one.
 _LEADING_YES_RX = re.compile(r"^\s*(అవునండి|అవును)[,.!\s]+")
+# A fee question, misheard forms included ("పీజ్", "ఏజ్ ఎంత అన్నారు" -- the
+# bot never speaks an age, so "ఎంత అన్నారు" with it is the fee).
+_FEE_ASK_RX = re.compile(r"ఫీజ|ఫీజు|పీజ్|పీజు|ఫీస్|\bfees?\b|అడ్మిషన్ ఫీ|రిజిస్ట్రేషన్ ఫీ|ఎంత కట్టాల|"
+                         r"ఏజ్ ఎంత అన్నార", re.I)
+
 # A job / placement question or the "mine is B.Tech too" objection.
 _PLACEMENT_ASK_RX = re.compile(r"జాబ్|ప్లేస్మెంట్|ప్లేస్‌మెంట్|ప్లేస్మెంటు|ఉద్యోగ|job|placement|"
                                r"(బీటెక్|డిప్లొమా|డిప్లమా|ఐటీఐ)\S*\s*(ఏ|కే|ే)?\s*(కదా|కదండి|కదండీ)", re.I)
@@ -3448,6 +3453,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        fee_again = None if self._legacy_engine else self._fee_repeat_reply(text)
+        if fee_again:
+            self.messages.append({"role": "assistant", "content": fee_again})
+            log.info("bot: %s  (fee repeated by the server)", fee_again)
+            self._speak_task = asyncio.create_task(self._speak(fee_again, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         objection = None if self._legacy_engine else self._placement_objection_reply(text)
         if objection:
             self.messages.append({"role": "assistant", "content": objection})
@@ -3849,6 +3863,30 @@ class CallSession:
                     f"కాంట్రాక్ట్ జాబ్స్‌లో హెల్ప్ చేస్తామండి. {tail}")
         return ("సారీ అండి, ప్లేస్‌మెంట్ ఈఈఈ బ్రాంచ్ వాళ్ళకి మాత్రమేనండి. "
                 + _END_CHECK["Telugu"].replace("సరేనండి, ", "", 1))
+
+    def _fee_repeat_reply(self, text: str) -> str | None:
+        """A fee question once the fee was already spoken -- "అడ్మిషన్ ఫీజు?",
+        a misheard "పీజ్ అండి" / "ఏజ్ ఎంత అన్నారు": the server repeats the
+        exact fee clause it said, plus who explains admission/payment. A real
+        SR call (2026-10-19) answered all three with "ఆ సమాచారం మా దగ్గర
+        లేదండి" right after quoting the fee."""
+        if not (self.client or {}).get("qualification_lines"):
+            return None
+        t = (text or "").strip()
+        if not t or not _FEE_ASK_RX.search(t) or re.search(r"శాలరీ|సాలరీ|జీతం|salary", t, re.I):
+            return None
+        clause = None
+        for m in reversed(self.messages):
+            if m["role"] != "assistant":
+                continue
+            hit = re.search(r"[^.,!?]*ఫీజు [^.,!?]*రూపాయల[^\s.,!?]*", m["content"] or "")
+            if hit:
+                clause = hit.group(0).strip()
+                break
+        if not clause:
+            return None
+        clause = re.sub(r"రూపాయలు$", "రూపాయలండి", clause)
+        return f"{clause}. అడ్మిషన్, పేమెంట్ వివరాలు మా అడ్మిషన్ టీమ్ చెప్తారండి."
 
     def _end_check_step(self, text: str) -> str | None:
         """"ask" when the caller says a bare సరే/ఓకే right after a goodbye-type

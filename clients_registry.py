@@ -213,7 +213,9 @@ CLIENTS: dict[str, dict] = {
             r"గవర్నమెంట్|government|అప్రూవ్|approved|గుర్తింపు|"
             # Not after ఫారెన్/ఫారిన్: "ఫారెన్ లోన్ ఇస్తారా?" was a misheard
             # foreign-JOB question and got the no-info line (2026-10-18).
-            r"(?<!ఫారెన్ )(?<!ఫారిన్ )(?<!ఫారెన్)(?<!ఫారిన్)(?<!ఫారెన్‌)(?<!ఫారిన్‌)లోన్|(?<!foreign )loan|ఏజ్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
+            r"(?<!ఫారెన్ )(?<!ఫారిన్ )(?<!ఫారెన్)(?<!ఫారిన్)(?<!ఫారెన్‌)(?<!ఫారిన్‌)లోన్|(?<!foreign )loan|ఏజ్ లిమిట్|age limit|వయస్సు|వయసు|రెండూ కలిపి|both together"
+            # Bare "ఏజ్" came out 2026-10-19: "ఏజ్ ఎంత అన్నారు?" was a misheard
+            # "ఫీజ్" and got the no-info line.
         ),
         # Tell the model which questions it has already asked twice.
         "repeat_guard": True,
