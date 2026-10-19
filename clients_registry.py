@@ -212,10 +212,14 @@ CLIENTS: dict[str, dict] = {
     # and hands interested students to the admission team by live transfer.
     "+918065353946": {
         "client_id": "sr_electrical",
+        # Customer #24: SR Electrical's own dashboard account
+        # (info@srelectricaltrainingcenter.com, Starter plan), created
+        # 2026-10-19 -- calls bill its 250 monthly minutes, not VoiceZen's.
+        # The env var still overrides if the account is ever re-made.
         "customer_id": (
             int(os.environ["SR_ELECTRICAL_CUSTOMER_ID"])
             if os.getenv("SR_ELECTRICAL_CUSTOMER_ID", "").strip().isdigit()
-            else None
+            else 24
         ),
         "dial_from": "+918065353946",
         "prompt_module": "script_sr_electrical",
