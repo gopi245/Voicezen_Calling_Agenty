@@ -144,9 +144,11 @@ IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
 CALL_START_MIN_IST = 10 * 60        # 10:00 IST
 CALL_END_MIN_IST = 19 * 60 - 5      # no new call after 18:55 IST
 GAP_BETWEEN_CALLS_S = 20
-# Two at a time (owner's choice, 2026-10-19): the Vobiz account runs 3 calls
-# at once in total, shared with inbound calls, so one line always stays free.
-MAX_CONCURRENT_CALLS = 2
+# Four at a time (owner's choice, 2026-10-19; was 2). The Vobiz account's
+# simultaneous-call limit is shared with inbound calls: if it is lower than
+# 4 plus the inbound calls in progress, the extra dial is refused and is
+# reported as no_answer, so campaign-outcome retries that contact.
+MAX_CONCURRENT_CALLS = 4
 ACTIVE_CALL_TIMEOUT_S = 20 * 60     # a call whose hangup never arrives stops blocking
 
 _QUEUE_FILE = Path(__file__).resolve().parent / "logs" / "agent_script_queue.json"
