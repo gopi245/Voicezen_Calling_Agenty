@@ -80,6 +80,9 @@ CLIENTS: dict[str, dict] = {
         # until the client's number arrives (owner, 2026-10-19).
         "lead_alert_whatsapp": "",
         "lead_alert_title": "Vedantha Vanam - site visit lead",
+        # Busy before a visit is booked: a polite close (audit 2026-10-19 got
+        # "మళ్లీ కాల్ చేస్తారా?" and no goodbye).
+        "busy_line": "సరేనండి, ఇబ్బంది లేదు. మీకు వీలైనప్పుడు ఈ నంబర్‌కి కాల్ చేయండి. ధన్యవాదాలు, నమస్కారం!",
         # The visit isn't pushed until the benefits were told: an early
         # "ఏ రోజు?" becomes the purpose question (client feedback 2026-10-19).
         "benefit_markers": ["మంచి అవకాశం", "అనుకూలమైన భూమి"],
@@ -87,6 +90,12 @@ CLIENTS: dict[str, dict] = {
         # Location: the model gave only Narasaraopet; JNTU (7 km) is the
         # owner's lead point (2026-10-19). "సైజ్ ఎక్కడ" is a misheard "సైట్".
         "fixed_answers": [
+            # Risk / trust: a fixed, honest line -- an audit (2026-10-19) had the
+            # model say "ప్లాట్ ధర, రిజిస్ట్రేషన్, పాస్‌బుక్ అన్నీ హామీ".
+            (r"నమ్మకం|నమ్మక|రిస్క్|మోసం|ఫ్రాడ్|నిజమేనా|సేఫ్ నా|సేఫా|సురక్షితమేనా|గ్యారంటీ|హామీ",
+             "శ్రీగంధం ఆదాయానికి ఖచ్చితమైన హామీ ఇవ్వలేమండి, అది మొక్కల పెరుగుదల, మార్కెట్ ధర మీద ఆధారపడి ఉంటుంది. "
+             "భూమి మీ పేరు మీద రిజిస్టర్ చేసి పాస్‌బుక్ ఇస్తాము, డాక్యుమెంట్స్ అన్నీ సైట్ విజిట్‌లో మా టీమ్ చూపిస్తారండి. "
+             "ఒకసారి సైట్ చూసి నిర్ణయం తీసుకోవచ్చు."),
             # "What is the site visit for?" -- a real customer asked twice and
             # never got it (2026-10-19). Before the location rule, because
             # "ఎక్కడికి విజిట్" also mentions where.
@@ -122,6 +131,9 @@ CLIENTS: dict[str, dict] = {
         "sentence_fixes": [
             (r"రెండు రెట్లు|రెండు వంద|రెండు వందల (శ్రీగంధం )?మొక్క|యాభై శ్రీగంధం మొక్కలు పాతిక",
              "పాతిక సెంట్లకు వంద శ్రీగంధం మొక్కలండి."),
+            # Never a guarantee the client did not give (audit 2026-10-19).
+            (r"అన్నీ హామీ|హామీ ఇస్తాం|హామీ ఇస్తాము|గ్యారంటీ ఇస్తాం|గ్యారంటీ ఉంది|హామీ ఉంది|రిస్క్ లేదు|రిస్క్ ఉండదు|నష్టం ఉండదు",
+             "డాక్యుమెంట్స్ అన్నీ సైట్ విజిట్‌లో మా టీమ్ చూపిస్తారండి."),
             # The passbook timing is never invented: "పాస్‌బుక్ రిజిస్ట్రేషన్
             # తర్వాత ఇస్తాం" was said twice on a real call despite the script.
             (r"పాస్‌?బుక్.{0,30}(తర్వాత|వెంటనే|రోజుల్లో|నెలలో|వారంలో)",
@@ -342,6 +354,14 @@ CLIENTS: dict[str, dict] = {
         # The script's fixed transfer sentence -- also triggers the transfer
         # when the model leaves the marker off.
         "transfer_phrase": "టీమ్‌కి కనెక్ట్ చేస్తున్నాను",
+        # "ఫీజు ఎక్కువ" is answered without repeating the fee and without a
+        # refusal; discounts stay with the team (audit 2026-10-19).
+        "price_objection": {
+            "rx": r"(ఫీజు|ఫీజ్|ఫీస్|రేటు|రేట్)\s*(చాలా\s*)?ఎక్కువ|ఎక్కువ\s*(ఫీజు|ఫీజ్|అవుతుంది)|తగ్గించ|తగ్గిస్త|"
+                  r"కట్టలేను|కట్టలేము|ఇవ్వలేను|అంత (డబ్బు|అమౌంట్) లేదు",
+            "first": "అర్థమైందండి. ఫీజు, పేమెంట్ ఆప్షన్స్ గురించి మా అడ్మిషన్ టీమ్ వివరంగా మాట్లాడతారండి.",
+            "again": "అర్థమైందండి. మీ బడ్జెట్ గురించి మా అడ్మిషన్ టీమ్‌తో మాట్లాడొచ్చండి.",
+        },
         # Fixed answers said by the server (regex, line). Next batch / start
         # date: the admission team has the dates -- the owner's line, with the
         # connect offer (2026-10-19). After a "no" the offer is left off.

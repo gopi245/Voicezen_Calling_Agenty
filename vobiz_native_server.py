@@ -2481,6 +2481,10 @@ def _looks_like_name(ans: str) -> bool:
     if lead and _looks_like_name(lead.group(1)):
         return True
     if re.search(r"\?|ఇస్తార|ఇవ్వర|చేస్తార|చూపిస్త|జాబ్|ఫీజు|ప్లేస్|శాలరీ|సాలరీ|కదా|కదండి|ఎంత|ఎక్కడ|ఎప్పుడు|"
+                 # Batch / day words are never a name: "సాయంత్రం ఆన్లైన్" became
+                 # "సాయంత్రం ఆన్లైన్ గారు" on an audit (2026-10-19).
+                 r"సాయంత్రం|ఉదయం|మార్నింగ్|ఈవినింగ్|ఈవెనింగ్|ఆఫ్టర్నూన్|ఆన్\s?‌?లైన్|ఆఫ్\s?‌?లైన్|బ్యాచ్|"
+                 r"రేపు|ఆదివారం|శనివారం|సోమవారం|వారం|నెల|ఓకే|సరే|అవును|వద్దు|"
                  r"ఉందా|ఉంటుందా|బీటెక్|డిప్లొమా|ఐటీఐ|B\.?Tech", ans, re.I):
         # A question or a qualification is never a name: "జాబ్ ఇస్తారండి."
         # was stored as the caller's name on a real SR call (2026-10-18)
@@ -3517,6 +3521,18 @@ class CallSession:
             self.messages.append({"role": "assistant", "content": offer})
             log.info("bot: %s  (final offer before the caller leaves)", offer)
             self._speak_task = asyncio.create_task(self._speak(offer, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
+        bl = (self.client or {}).get("busy_line")
+        if (bl and not self._legacy_engine and not self._visit_day_known()
+                and re.search(r"బిజీ|busy|ఇప్పుడు (కాదు|మాట్లాడలేను|వీలు కాదు|కుదరదు)|డ్రైవింగ్|బండి నడుపుతున్నా|"
+                              r"తర్వాత (కాల్ చేయండి|మాట్లాడదాం|చేస్తాను)", text or "", re.I)):
+            # Busy before a visit is booked: a polite close, then hang up.
+            self.messages.append({"role": "assistant", "content": bl})
+            log.info("bot: %s  [END_CALL] (caller is busy)", bl)
+            self._speak_task = asyncio.create_task(self._speak(bl, end_call=True, turn=turn))
             self._speak_task.add_done_callback(_log_task_error)
             if turn is not None:
                 turn["speak_task"] = self._speak_task
