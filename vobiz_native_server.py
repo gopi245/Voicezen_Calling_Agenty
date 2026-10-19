@@ -3122,6 +3122,13 @@ class CallSession:
     async def _confirm_barge_in(self):
         await asyncio.sleep(BARGE_IN_CONFIRM_S)
         if self.playing:
+            if (self.client or {}).get("relevance_rx"):
+                # On noise-filtered lines a long sound alone never stops the
+                # bot -- the words decide (_on_transcript). On a noisy real
+                # call (2026-10-19) traffic lasting a second cut the greeting
+                # four seconds in, before any word was known.
+                log.info("barge-in: sound for %.1fs -- waiting for words before stopping", BARGE_IN_CONFIRM_S)
+                return
             log.info("barge-in: caller still talking after %.1fs", BARGE_IN_CONFIRM_S)
             await self._barge_in()
 
@@ -3301,10 +3308,20 @@ class CallSession:
                     timer.cancel()
                 log.info("ignored %r: too short to interrupt the bot", text)
                 return
-            if waiting:
+            if (talking_left > 0 or self.playing) and self._is_noise_text(text):
+                # Words that have nothing to do with the call never stop the
+                # bot (noise-filtered lines): the greeting kept being cut on a
+                # noisy line, 2026-10-19.
+                if waiting:
+                    timer.cancel()
+                log.info("ignored %r: noise while the bot is talking", text)
+                return
+            if waiting or (self.playing and (self.client or {}).get("relevance_rx")):
                 # Real words while the bot is talking: stop now rather than
-                # at the timer.
-                timer.cancel()
+                # at the timer. (On noise-filtered lines the timer no longer
+                # stops it, so real words do it here.)
+                if timer is not None:
+                    timer.cancel()
                 if self.playing:
                     await self._barge_in()
         log.info("caller (partial): %s", text)
@@ -3980,6 +3997,10 @@ class CallSession:
             return False
         msgs = self.messages[:-1] if in_history else self.messages
         prev = next((m["content"] for m in reversed(msgs) if m["role"] == "assistant"), "") or ""
+        if _is_filler(t) or re.fullmatch(r"\W*(ఉమ్|ఊ|హ్మ్|ఆ|హా)+\W*", t):
+            # A filler is the caller listening, not noise -- "ఉమ్." got
+            # "సారీ, వినపడలేదు" on a real test (2026-10-19).
+            return False
         relevant = (re.search(rel, t, re.I) or _is_backchannel(t) or _caller_said_goodbye(t)
                     or ("పేరు చెప్తార" in prev and _looks_like_name(t))
                     or re.search((self.client or {}).get("visit_day_rx") or r"$^", t, re.I))
