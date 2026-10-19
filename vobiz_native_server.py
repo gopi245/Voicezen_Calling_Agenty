@@ -957,6 +957,7 @@ async def _warm_voicezen_greeting():
 @app.on_event("startup")
 async def _on_startup():
     asyncio.create_task(_warm_voicezen_greeting())
+    campaign_rules.start_queue(_queue_place_call, _queue_report_failed)
 
 
 async def _report_unanswered_campaign_call(campaign: dict, cause: str | None,
@@ -1020,6 +1021,7 @@ async def hangup(request: Request):
     # never-answered case.
     info = pending_call_info.pop(call_uuid, None) if call_uuid else None
     campaign = info.get("campaign") if info else None
+    campaign_rules.on_hangup(call_uuid)  # the queue may place the next call
     if campaign:
         await _report_unanswered_campaign_call(campaign, cause)
 
@@ -1051,6 +1053,20 @@ async def dial(request: Request):
         await _report_unanswered_campaign_call(campaign, None, outcome="do_not_call",
                                                summary="Not called: on the do-not-call list (asked not to be called).")
         return {"skipped": "do_not_call"}
+    if campaign_rules.uses_agent_script(campaign):
+        # Held and placed one at a time inside calling hours (campaign_rules
+        # call queue) -- the contact stays "dialing" on the dashboard until
+        # its call is reported.
+        return {"queued": True, "position": campaign_rules.queue_call(body)}
+    _, data = await _place_dial(body)
+    return data
+
+
+async def _place_dial(body: dict) -> tuple[int, dict]:
+    """The Vobiz call itself, for /dial and the agent-script call queue:
+    (HTTP status, Vobiz's reply)."""
+    to = body.get("to")
+    campaign = body.get("campaign")
 
     # request.base_url reflects what uvicorn itself saw, not what the caller
     # actually reached -- Caddy terminates TLS in front of this container and
@@ -1104,7 +1120,36 @@ async def dial(request: Request):
             # context on every real call, since it never matched.
             if 200 <= r.status < 300 and campaign and request_uuid:
                 pending_call_info[request_uuid] = {"campaign": campaign}
-            return data
+            return r.status, data
+
+
+async def _queue_place_call(body: dict) -> tuple[bool, str | None, str]:
+    status, data = await _place_dial(body)
+    request_uuid = data.get("request_uuid") if isinstance(data, dict) else None
+    return 200 <= status < 300 and bool(request_uuid), request_uuid, f"HTTP {status} {data}"
+
+
+async def _queue_report_failed(body: dict, detail: str) -> None:
+    # Reported as no_answer so campaign-outcome's own retry schedule tries
+    # the contact again instead of leaving it stuck on "dialing".
+    log.error("call queue: could not place %s: %s", body.get("to"), detail)
+    await _report_unanswered_campaign_call(body.get("campaign") or {}, "dial failed",
+                                           summary=f"Call could not be placed ({detail[:120]})")
+
+
+@app.post("/agent-queue/clear")
+async def agent_queue_clear(request: Request):
+    """Empty the agent-script call queue (the dashboard's Cancel can't reach it)."""
+    if DIAL_SECRET and request.headers.get("x-dial-secret") != DIAL_SECRET:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"dropped": campaign_rules.clear_queue()}
+
+
+@app.get("/agent-queue")
+async def agent_queue_status(request: Request):
+    if DIAL_SECRET and request.headers.get("x-dial-secret") != DIAL_SECRET:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return campaign_rules.queue_status()
 
 
 _transfer_failed_wav: bytes | None = None
