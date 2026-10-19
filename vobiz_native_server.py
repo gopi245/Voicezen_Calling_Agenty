@@ -3323,6 +3323,12 @@ class CallSession:
             # to the question just asked, so it goes through as a turn.
             log.info("ignored %r: acknowledgement while the bot is still talking", text)
             return
+        if not lost and (generating or still_talking > 0 or self.playing) and self._is_noise_text(text):
+            # Noise while the bot is talking never cuts it off: on a real
+            # noisy line (2026-10-19) "పాణి కొండూ బాక్సు" three seconds in
+            # replaced the whole greeting with "సారీ, వినపడలేదు".
+            log.info("ignored %r: noise while the bot is talking", text)
+            return
         self._start_turn(text)
 
     def _start_turn(self, text: str) -> None:
@@ -3465,6 +3471,15 @@ class CallSession:
             self.messages.append({"role": "assistant", "content": fixed})
             log.info("bot: %s  (fixed answer)", fixed)
             self._speak_task = asyncio.create_task(self._speak(fixed, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
+        cont = None if self._legacy_engine else self._continue_after_noise_reply(text)
+        if cont:
+            self.messages.append({"role": "assistant", "content": cont})
+            log.info("bot: %s  (continuing after the noise line)", cont)
+            self._speak_task = asyncio.create_task(self._speak(cont, turn=turn))
             self._speak_task.add_done_callback(_log_task_error)
             if turn is not None:
                 turn["speak_task"] = self._speak_task
@@ -3916,6 +3931,40 @@ class CallSession:
                     return True
         return False
 
+    def _is_noise_text(self, text: str, in_history: bool = False) -> bool:
+        """Clients with "relevance_rx": nothing in these words is about the
+        call (no topic word, yes/no, bye, day, or a name answer)."""
+        rel = (self.client or {}).get("relevance_rx")
+        t = (text or "").strip()
+        if not rel or not t:
+            return False
+        msgs = self.messages[:-1] if in_history else self.messages
+        prev = next((m["content"] for m in reversed(msgs) if m["role"] == "assistant"), "") or ""
+        relevant = (re.search(rel, t, re.I) or _is_backchannel(t) or _caller_said_goodbye(t)
+                    or ("పేరు చెప్తార" in prev and _looks_like_name(t))
+                    or re.search((self.client or {}).get("visit_day_rx") or r"$^", t, re.I))
+        return not relevant
+
+    def _continue_after_noise_reply(self, text: str) -> str | None:
+        """Our last line was a noise line and the caller now says go on
+        ("పర్లేదు చెప్పండి", "చెప్పండి", "ఓకే"): repeat our last REAL line --
+        a real call got "ఆ వివరం టీమ్ మీకు కాల్ చేసి చెప్తారండి" instead, and
+        never heard the greeting or the project (2026-10-19)."""
+        if not (self.client or {}).get("relevance_rx"):
+            return None
+        noise_lines = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు")
+        said = [m["content"] or "" for m in self.messages[:-1] if m["role"] == "assistant"]
+        if not said or not any(n in said[-1] for n in noise_lines):
+            return None
+        t = (text or "").strip()
+        if not re.search(r"చెప్పండి|పర్లేదు|పర్వాలేదు|మాట్లాడండి|ఓకే|సరే|హా|అవును|వినపడుతుంది|వినిపిస్తుంది", t):
+            return None
+        real = [s for s in said if not any(n in s for n in noise_lines)]
+        if not real:
+            return None
+        self._noise_turns = 0
+        return real[-1]
+
     def _noise_turn_reply(self, text: str) -> str | None:
         """Clients with "relevance_rx": a turn with nothing to do with the
         call -- background people, traffic, garbled fragments -- gets "please
@@ -3923,15 +3972,10 @@ class CallSession:
         about the noise. A noisy test call (2026-10-19) answered "నాకు కొంచెం
         డ్రాప్స్ వేస్తారా?" and "అయ్యో సారీ అమ్మ... లేట్ అయిపోతా ఉందమ్మా" (other
         people near the caller) as if the caller had said them."""
-        rel = (self.client or {}).get("relevance_rx")
         t = (text or "").strip()
-        if not rel or not t:
+        if not (self.client or {}).get("relevance_rx") or not t:
             return None
-        prev = next((m["content"] for m in reversed(self.messages[:-1]) if m["role"] == "assistant"), "") or ""
-        relevant = (re.search(rel, t, re.I) or _is_backchannel(t) or _caller_said_goodbye(t)
-                    or ("పేరు చెప్తార" in prev and _looks_like_name(t))
-                    or re.search((self.client or {}).get("visit_day_rx") or r"$^", t, re.I))
-        if relevant:
+        if not self._is_noise_text(t, in_history=True):
             self._noise_turns = 0
             return None
         n = getattr(self, "_noise_turns", 0) + 1
