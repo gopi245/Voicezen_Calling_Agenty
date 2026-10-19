@@ -3935,7 +3935,10 @@ class CallSession:
         t = (text or "").strip()
         if not t or "?" in t:
             return False
-        return _caller_said_goodbye(t) or len(_words(t)) <= 4
+        # Only a real goodbye / thanks / bare OK ends it -- any short reply
+        # used to: "భూమి కావాలండి" (they wanted more) was hung up on, client
+        # feedback 2026-10-19.
+        return _caller_said_goodbye(t) or _is_backchannel(t)
 
     def _caller_leaving_now(self) -> bool:
         """The caller's latest words sound like leaving without a visit: "ఓకే",
@@ -4464,6 +4467,19 @@ class CallSession:
                         if not stripped:
                             continue  # the sentence was only "అవునండి."
                         say = stripped
+                    bm = (self.client or {}).get("benefit_markers") or ()
+                    if (say and bm and say.endswith("?") and re.search(r"ఏ రోజు|సైట్ విజిట్‌కి రావ|సైట్ విజిట్‌కు రావ", say)
+                            and not any(any(b in (m["content"] or "") for b in bm)
+                                        for m in self.messages if m["role"] == "assistant")):
+                        # No site-visit push before the project's benefits were
+                        # told: two real calls went price -> "ఏ రోజు?" (client
+                        # feedback, 2026-10-19). Ask the purpose question first.
+                        pq = (self.client or {}).get("purpose_question")
+                        asked_pq = any(pq and pq[:20] in (m["content"] or "") for m in self.messages
+                                       if m["role"] == "assistant")
+                        if pq and not asked_pq:
+                            log.info("swapped an early visit question for the purpose question: %r", say)
+                            say = pq
                     vday = self._visit_day_known()
                     if (say and vday and say.endswith("?")
                             and re.search(r"ఏ రోజు|శనివారమా|శనివారం లేదా ఆదివారం|ఎప్పుడు రావ", say)):

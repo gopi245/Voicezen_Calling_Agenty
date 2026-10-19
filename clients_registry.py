@@ -77,6 +77,10 @@ CLIENTS: dict[str, dict] = {
         # until the client's number arrives (owner, 2026-10-19).
         "lead_alert_whatsapp": "",
         "lead_alert_title": "Vedantha Vanam - site visit lead",
+        # The visit isn't pushed until the benefits were told: an early
+        # "ఏ రోజు?" becomes the purpose question (client feedback 2026-10-19).
+        "benefit_markers": ["మంచి అవకాశం", "అనుకూలమైన భూమి"],
+        "purpose_question": "మీరు పెట్టుబడి కోసం చూస్తున్నారా, లేక భవిష్యత్తులో వ్యవసాయం కోసం భూమి కావాలా అండి?",
         # Known-false sentences swapped before they are spoken: a demo
         # doubled the plant count ("రెండు వంద శ్రీగంధం మొక్కలు", 2026-10-19).
         "sentence_fixes": [
