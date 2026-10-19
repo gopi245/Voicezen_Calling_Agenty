@@ -217,10 +217,10 @@ CLIENTS: dict[str, dict] = {
         ),
         # Tell the model which questions it has already asked twice.
         "repeat_guard": True,
-        # Live-transfer target: the owner's own phone for now (their ask,
-        # 2026-10-17). The admission team's number is +919154681593 --
-        # restore it when the owner says so.
-        "transfer_to": "+919704123933",
+        # Live-transfer target: the admission team, restored 2026-10-19 at
+        # the owner's ask (it was the owner's own test phone, +919704123933,
+        # from 2026-10-17).
+        "transfer_to": "+919154681593",
         # When a caller says yes to the team connect, their details go to
         # this WhatsApp number via the lead-alert edge function (owner's
         # ask, 2026-10-17) -- WaSender internal channel, not a customer
