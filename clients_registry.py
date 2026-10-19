@@ -45,7 +45,7 @@ CLIENTS: dict[str, dict] = {
         # A faint office behind the whole call. Re-enabled 2026-10-15 after
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
-        "background_noise": "low",
+        "background_noise": None,  # off 2026-10-19: the ambience clip contains real speech (owner's ask)
         # Telugu only, like SR Electrical.
         "stt_language": "te-IN",
         "tts_language": "te",
@@ -165,7 +165,7 @@ CLIENTS: dict[str, dict] = {
         # A faint office behind the whole call. Re-enabled 2026-10-15 after
         # the dead-air cause was fixed (a stalled TTS request had no
         # first-byte deadline or retry; websocket sends now serialized).
-        "background_noise": "low",
+        "background_noise": None,  # off 2026-10-19: the ambience clip contains real speech (owner's ask)
         "engine": "new",
         "stt_language": "te-IN",
         "tts_language": "te",
