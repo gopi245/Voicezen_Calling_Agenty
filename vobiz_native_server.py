@@ -4705,6 +4705,11 @@ class CallSession:
                                 # The model's own "సరేనండి." already came first.
                                 say = say.replace("సరేనండి, ", "", 1)
                             log.info("swapped a back-to-back offer for a date confirmation: %r", say)
+                            norm_s = lambda x: re.sub(r"[\s.,!?।‌‍]+", "", x or "")
+                            if any(norm_s(say) and norm_s(say) in norm_s(s) for s in said):
+                                # The model already confirmed the same date in
+                                # this reply ("...వచ్చే వారం నుంచి." twice, audit).
+                                continue
                         else:
                             log.info("dropped a back-to-back repeat of the connect offer: %r", say)
                             continue
