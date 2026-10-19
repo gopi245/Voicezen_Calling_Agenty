@@ -156,7 +156,14 @@ _wake: asyncio.Event | None = None
 _runner_task: asyncio.Task | None = None
 
 
+# SWITCH: calling hours. Off since 2026-10-19 (owner: "remove time rule") --
+# queued calls go out at any hour. Set True to call only 10:00-18:55 IST.
+CALLING_HOURS_ON = False
+
+
 def within_hours(now: _dt.datetime | None = None) -> bool:
+    if not CALLING_HOURS_ON:
+        return True
     t = now or _dt.datetime.now(IST)
     minutes = t.hour * 60 + t.minute
     return CALL_START_MIN_IST <= minutes < CALL_END_MIN_IST
@@ -229,8 +236,8 @@ async def _sleep(seconds: float) -> None:
 async def _run(place) -> None:
     """place(body) -> (ok, request_uuid, detail); report_failed(body, detail)."""
     place_call, report_failed = place
-    log.info("call queue started: %d waiting, %02d:%02d-%02d:%02d IST", len(_load_queue()),
-             CALL_START_MIN_IST // 60, CALL_START_MIN_IST % 60, CALL_END_MIN_IST // 60, CALL_END_MIN_IST % 60)
+    log.info("call queue started: %d waiting, %d at a time, calling hours %s", len(_load_queue()),
+             MAX_CONCURRENT_CALLS, "10:00-18:55 IST" if CALLING_HOURS_ON else "off (any time)")
     while True:
         try:
             q = _load_queue()
