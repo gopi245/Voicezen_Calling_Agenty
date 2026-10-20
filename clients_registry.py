@@ -185,6 +185,9 @@ CLIENTS: dict[str, dict] = {
             r"లేరు|లేడు|ఇంట్లో|భార్య|భర్త|కొడుకు|కూతురు|ఆలోచించి|చూద్దాం|"
             # Approvals, water, fencing -- things a land buyer always asks.
             r"అప్రూవ|ఎల్ ?ఆర్ ?ఎస్|LRS|నీళ్|నీరు|బోరు|బోర్|ఫెన్సింగ్|కరెంట్|రోడ్|"
+            # "send me photos / the brochure" -- a buyer asking to see it
+            # before coming, taken as noise (sim, 2026-10-20).
+            r"ఫొటో|ఫోటో|ఫోటోలు|ఇమేజ్|వీడియో|బ్రోచర్|బ్రోషర్|పంపండి|పంపు|పంపిస్త|మెసేజ్|మ్యాప్|"
             # Question words: "దేనికి?" (what's the visit for?) was taken as
             # noise on a real call (2026-10-19).
             r"దేనికి|దీనికి|ఎందుకు|ఏంటి|ఏమిటి|ఏంటండి|ఎవర|ఏది|ఎలా|ఎప్పుడు|ఎక్కడికి|"
