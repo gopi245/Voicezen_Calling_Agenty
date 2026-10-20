@@ -140,6 +140,9 @@ AGENT_CONFIG_WAIT_VOICEZEN_S = float(os.getenv("AGENT_CONFIG_WAIT_VOICEZEN_S", "
 # Newer-engine calls wait this long before the greeting starts -- with
 # background noise on, the caller hears the room, not silence.
 GREETING_LEAD_IN_S = float(os.getenv("GREETING_LEAD_IN_S", "0.5"))
+# How long the greeting waits for the caller's first audio frame before
+# giving up and speaking anyway.
+GREETING_MEDIA_WAIT_S = float(os.getenv("GREETING_MEDIA_WAIT_S", "2.0"))
 SILENCE_LINES = {  # (can you hear me?, closing)
     "hi": ("जी, क्या आप मुझे सुन पा रहे हैं?",
            "माफ़ कीजिए जी, आपकी आवाज़ नहीं आ रही है। कृपया थोड़ी देर बाद दोबारा कॉल करें, धन्यवाद।"),
@@ -2685,6 +2688,8 @@ class CallSession:
         self._rules_campaign: dict | None = None
         # The welcome, once spoken (set in start()).
         self._greeting_text: str | None = None
+        # Set on the caller's first audio frame: the line is open both ways.
+        self._media_seen = asyncio.Event()
         # When the caller's words last reached us, so the silence prompt
         # can tell real quiet from a turn we answered.
         self._last_caller_turn_at = 0.0
@@ -3197,6 +3202,14 @@ class CallSession:
             self._speak_task.add_done_callback(_log_task_error)
         else:
             async def _greet_after_lead_in(text=greeting):
+                # Wait for the caller's first audio frame -- that is when the
+                # line is really open -- then the usual short lead-in. Capped
+                # so a silent trunk can never leave the line without a
+                # welcome at all.
+                try:
+                    await asyncio.wait_for(self._media_seen.wait(), GREETING_MEDIA_WAIT_S)
+                except asyncio.TimeoutError:
+                    log.warning("no caller audio after %.1fs -- greeting anyway", GREETING_MEDIA_WAIT_S)
                 await asyncio.sleep(GREETING_LEAD_IN_S)
                 await self._speak(text)
             self._speak_task = asyncio.create_task(_greet_after_lead_in())
@@ -3215,6 +3228,13 @@ class CallSession:
 
     async def on_media(self, pcm16_b64: str):
         raw = base64.b64decode(pcm16_b64)
+        # The first frame from the caller proves their audio path is open
+        # both ways. The greeting waits for it (see _greet_after_lead_in):
+        # a fixed half-second was not enough on a real inbound call
+        # (2026-10-20) and the whole welcome was spoken into a line the
+        # caller could not hear yet.
+        if not self._media_seen.is_set():
+            self._media_seen.set()
         # The recording keeps the caller's ORIGINAL audio, so calls with and
         # without noise cancellation can be compared afterwards.
         self._caller_audio_chunks.append(raw)
