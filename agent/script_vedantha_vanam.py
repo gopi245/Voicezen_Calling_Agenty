@@ -12,17 +12,9 @@ A GREETING spoken on pickup, and INSTRUCTIONS the model reasons within.
 """
 
 GREETING = (
-    # Shortened 2026-10-20. The client's own four-sentence greeting took
-    # about fifteen seconds, and in the first campaign 16 of the 37 people
-    # who answered hung up inside ten -- before it reached its question.
-    # Same voice, same three things (who, what, may I), about half as long.
-    # The client's original is kept below if they want it back.
-    "నమస్కారం సార్! వేదాంత వనం శ్రీగంధం ఫామ్‌ల్యాండ్ ప్రాజెక్ట్ నుంచి మాట్లాడుతున్నాను. "
-    "రెండు నిమిషాలు మాట్లాడవచ్చా సార్?"
-)
-
-# The client's own greeting, word for word (2026-10-18) -- replaced above.
-GREETING_ORIGINAL = (
+    # The client's own greeting, word for word (2026-10-18), and the SAME
+    # one on calls we place and calls that come in -- the owner's decision
+    # (2026-10-20), after it was briefly shortened and split in two.
     "నమస్కారం సార్! నేను వేదాంత వనం ప్రాజెక్ట్ నుంచి మాట్లాడుతున్నాను. "
     "మీకు రియల్ ఎస్టేట్ లేదా వ్యవసాయ భూములలో పెట్టుబడి పెట్టే ఆసక్తి ఉందని "
     "మీకు మా ప్రాజెక్ట్ వివరాలు తెలియజేయడానికి కాల్ చేశాను. "
