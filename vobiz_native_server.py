@@ -2595,6 +2595,12 @@ def _looks_like_name(ans: str) -> bool:
     words = ans.split()
     if not 1 <= len(words) <= 2:
         return False
+    # A single syllable is a fragment, not a name: a real call (2026-10-20)
+    # heard "వా." and the caller was thanked as "వా గారు" for the rest of
+    # the call. Counted in base letters, since Telugu vowel marks are not
+    # word characters -- "రవి" is two letters and a real name, "వా" is one.
+    if len(words) == 1 and len(re.sub(r"[^\w]", "", ans)) < 2:
+        return False
     return not any(_NOT_A_NAME.search(w) for w in words)
 
 
@@ -4250,6 +4256,15 @@ class CallSession:
             # A filler is the caller listening, not noise -- "ఉమ్." got
             # "సారీ, వినపడలేదు" on a real test (2026-10-19).
             return False
+        if re.search(r"వినిపిస్తు|వినపడుతు|వినిపిస్తోంది|మాట్లాడతాను|మాట్లాడండి|చెప్పండి|"
+                     # Answers to OUR own questions, and where the caller is
+                     # calling from -- all treated as noise on real calls
+                     # (2026-10-20): "ఆ వినిపిస్తుంది" looped three times
+                     # against "నా మాట వినిపిస్తోందా?", and "మేము కాకినాడలో
+                     # ఉన్నామండి" (too far to visit) was never heard.
+                     r"ఉన్నాము|ఉన్నామండి|ఉన్నాను|ఉంటాను|ఉంటాము|నుంచి మాట్లాడ|"
+                     r"మాకేం|మాకు ఏం|ఏం వస్తుంది|ఏమి వస్తుంది", t, re.I):
+            return False
         relevant = (re.search(rel, t, re.I) or _is_backchannel(t) or _caller_said_goodbye(t)
                     or ("పేరు చెప్తార" in prev and _looks_like_name(t))
                     or re.search((self.client or {}).get("visit_day_rx") or r"$^", t, re.I))
@@ -4262,7 +4277,12 @@ class CallSession:
         never heard the greeting or the project (2026-10-19)."""
         if not (self.client or {}).get("relevance_rx"):
             return None
-        noise_lines = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు")
+        # The "can you hear me?" line counts too: a real call (2026-10-20)
+        # answered it with "ఆ వినిపిస్తుంది" three times and heard "సారీ,
+        # వినపడలేదు" back every time, because only the noise lines were
+        # treated as something to continue from.
+        noise_lines = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు",
+                       "నా మాట వినిపిస్తోందా")
         said = [m["content"] or "" for m in self.messages[:-1] if m["role"] == "assistant"]
         if not said or not any(n in said[-1] for n in noise_lines):
             return None
@@ -5148,6 +5168,16 @@ class CallSession:
                     if say and self._offer_limit_reached() and _CONNECT_OFFER_RX.search(say):
                         log.info("dropped a third offer to connect: %r", say)
                         continue
+                    if (say and not self._legacy_engine and not (self.client or {}).get("transfer_to")
+                            and re.search(r"కలుపుతాను|కనెక్ట్ చేస్తాను|కనెక్ట్ చేయమంటార|లైన్‌లో ఉండండి|"
+                                          r"మాట్లాడేలా|connect you", say)):
+                        # No transfer number on this line, so there is nobody
+                        # to connect to: a real call (2026-10-20) offered
+                        # "మా నిపుణులతో మాట్లాడేలా కలుపుతాను అండి?" on
+                        # Vedantha Vanam, which has no transfer at all.
+                        lang_t = (self.client or {}).get("reply_language") or "Telugu"
+                        say = _TEAM_WILL_CALL.get(lang_t, _TEAM_WILL_CALL["Telugu"])
+                        log.info("replaced a connect offer on a line with no transfer number")
                     if (say and not self._legacy_engine and _CONNECT_OFFER_RX.search(say)
                             and self._transfer_declined_standing()):
                         # The owner's rule (2026-10-17): once the caller said
