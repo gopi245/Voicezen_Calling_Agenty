@@ -3805,6 +3805,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        smaller = None if self._legacy_engine else self._smaller_plot_reply(text)
+        if smaller:
+            self.messages.append({"role": "assistant", "content": smaller})
+            log.info("bot: %s  (smaller plot than we sell)", smaller)
+            self._speak_task = asyncio.create_task(self._speak(smaller, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         size_price = None if self._legacy_engine else self._size_price_reply(text)
         if size_price:
             self.messages.append({"role": "assistant", "content": size_price})
@@ -4410,6 +4419,33 @@ class CallSession:
                     "రూపాయల చొప్పున. ఎన్ని ప్లాట్లు కావాలో సైట్ విజిట్‌లో మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
         return ("సెంటుకి యాభై ఆరు వేల రూపాయలండి. మీరు అడిగిన సైజ్‌కి మొత్తం ఎంతవుతుందో సైట్ విజిట్‌లో "
                 "మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
+
+    def _smaller_plot_reply(self, text: str) -> str | None:
+        """They want LESS than the smallest plot ("నాకు ఆరు సెంట్లు
+        ఇవ్వగలరా?", "సగం ల్యాండ్ కావాలి"). A real call (2026-10-20) answered
+        a ready buyer's size question with "ధర తగ్గించలేము" three times --
+        he had said nothing about price. The plot list starts at twelve and
+        a half cents, so that is said plainly and the smaller request goes
+        to the team, who decide it."""
+        if not (self.client or {}).get("price_per_cent"):
+            return None
+        t = (text or "").strip()
+        if not t:
+            return None
+        wants_smaller = bool(re.search(r"సగం|హాఫ్|half|చిన్న ప్లాట్|తక్కువ (సెంట్|భూమి|ల్యాండ్)", t, re.I))
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(సెంట్|సెంటు|సెంట్ల|cents?)", t, re.I)
+        if m and float(m.group(1)) < 12.5:
+            wants_smaller = True
+        # Callers say the number, they don't spell it: "నాకు ఆరు సెంట్లు
+        # ఇవ్వగలరా?" carries no digit at all. పన్నెండు is left out -- it is
+        # one short of the standard పన్నెండున్నర plot and means that plot.
+        if re.search(r"\b(ఒక|ఒకటి|రెండు|మూడు|నాలుగు|ఐదు|ఆరు|ఏడు|ఎనిమిది|తొమ్మిది|పది|పదకొండు)\s*"
+                     r"(సెంట్లు|సెంట్ల|సెంట్|సెంటు|సెంట్స్)", t):
+            wants_smaller = True
+        if not wants_smaller:
+            return None
+        return ("మా ప్లాట్లు పన్నెండు న్నర సెంట్ల నుంచి మొదలవుతాయండి, ఏడు లక్షల రూపాయలు. "
+                "అంతకన్నా చిన్న ప్లాట్ గురించి మా టీమ్ మీకు కాల్ చేసి చెప్తారండి.")
 
     def _price_objection_reply(self, text: str) -> str | None:
         """Clients with "price_objection": the caller names a lower amount,
