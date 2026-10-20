@@ -144,11 +144,13 @@ IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
 CALL_START_MIN_IST = 10 * 60        # 10:00 IST
 CALL_END_MIN_IST = 19 * 60 - 5      # no new call after 18:55 IST
 GAP_BETWEEN_CALLS_S = 20
-# Four at a time (owner's choice, 2026-10-19; was 2). The Vobiz account's
+# Three at a time (owner's choice, 2026-10-20; was 4). The Vobiz account's
 # simultaneous-call limit is shared with inbound calls: if it is lower than
-# 4 plus the inbound calls in progress, the extra dial is refused and is
-# reported as no_answer, so campaign-outcome retries that contact.
-MAX_CONCURRENT_CALLS = 4
+# this plus the inbound calls in progress, the extra dial is refused and is
+# reported as no_answer, so campaign-outcome retries that contact. At 4 a
+# campaign of 178 contacts came back 32 USER_BUSY against 7 normal calls --
+# the account ceiling is 3, so the fourth dial was always refused.
+MAX_CONCURRENT_CALLS = 3
 ACTIVE_CALL_TIMEOUT_S = 20 * 60     # a call whose hangup never arrives stops blocking
 
 _QUEUE_FILE = Path(__file__).resolve().parent / "logs" / "agent_script_queue.json"

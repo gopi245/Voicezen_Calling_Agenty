@@ -3378,6 +3378,27 @@ class CallSession:
         self._speak_task = asyncio.create_task(self._speak(text, end_call=last))
         self._speak_task.add_done_callback(_log_task_error)
 
+    def _screener_line(self) -> str:
+        """Who to say is calling when the phone's screener asks ("record your
+        name / reason for calling").
+
+        Named per call, not fixed: this said "VoiceZen, about the callback you
+        asked for on the website" on a Vedantha Vanam campaign call (owner,
+        2026-10-20) -- the wrong company and a callback nobody had asked for.
+        Only a website-lead callback keeps that wording, because only there is
+        it true.
+        """
+        if self._campaign and not self._campaign.get("instant_lead"):
+            who = (self._campaign.get("business_name") or "").strip()
+            if who:
+                return f"నేను {who} నుంచి కాల్ చేస్తున్నాను."
+        if self._campaign and self._campaign.get("instant_lead"):
+            return "నేను VoiceZen నుంచి, వెబ్‌సైట్‌లో అడిగిన కాల్ బ్యాక్ కోసం కాల్ చేస్తున్నాను."
+        who = (self.client or {}).get("screener_name")
+        if who:
+            return f"నేను {who} నుంచి కాల్ చేస్తున్నాను."
+        return "నేను కాల్ చేస్తున్నాను, ఒక్క నిమిషం మాట్లాడవచ్చా?"
+
     async def _on_transcript(self, text: str):
         """Buffer the transcript and (re)start the debounce timer. Sarvam
         splits one spoken sentence into several finals, so answering each one
@@ -3389,7 +3410,7 @@ class CallSession:
             # VOICEZEN TEST -- the caller's phone talking, not the caller.
             if _CALL_SCREENER.search(text) and not self._screener_answered:
                 self._screener_answered = True
-                line = "నేను VoiceZen నుంచి, వెబ్‌సైట్‌లో అడిగిన కాల్ బ్యాక్ కోసం కాల్ చేస్తున్నాను."
+                line = self._screener_line()
                 log.info("call screener heard (%r) -- saying who is calling", text)
                 self.messages.append({"role": "assistant", "content": line})
                 self._speak_task = asyncio.create_task(self._speak(line))
