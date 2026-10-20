@@ -2677,6 +2677,11 @@ class CallSession:
         # script plus the opt-out / busy / wrong-number rules.
         self._agent_script_campaign = False
         self._rules_campaign: dict | None = None
+        # The welcome, once spoken (set in start()).
+        self._greeting_text: str | None = None
+        # When the caller's words last reached us, so the silence prompt
+        # can tell real quiet from a turn we answered.
+        self._last_caller_turn_at = 0.0
         self._opted_out = False
         self._caller_busy = False
         # Telugu by default (this client's callers) -- overridden in start()
@@ -3171,6 +3176,9 @@ class CallSession:
         # assistant turn at all and it re-opened with the greeting instead of
         # answering, because as far as its history showed it hadn't spoken yet.
         self.messages.append({"role": "assistant", "content": greeting})
+        # Kept so the guards can tell the welcome apart from a normal line
+        # and never say it twice.
+        self._greeting_text = greeting
         if self._legacy_engine:
             self._speak_task = asyncio.create_task(self._speak(greeting))
             self._speak_task.add_done_callback(_log_task_error)
@@ -3366,8 +3374,13 @@ class CallSession:
         await asyncio.sleep(SILENCE_PROMPT_S)
         if (token != self._silence_token or self._done.is_set() or self.playing or self._pending
                 or (self._speech_seen_at or 0) > finished_at
+                or self._last_caller_turn_at > finished_at
                 or (self._open_turn is not None and self._open_turn["task"] is not None
                     and not self._open_turn["task"].done())):
+            # _last_caller_turn_at too: they DID speak and we answered (a
+            # noise line counts), so "can you hear me?" is the wrong thing
+            # to say -- a real call (2026-10-20) asked it right after the
+            # caller said "చెప్పండి అంటున్నాను".
             return
         lines = SILENCE_LINES.get(self._tts_language, SILENCE_LINES["en"])
         self._silence_prompts += 1
@@ -3660,6 +3673,7 @@ class CallSession:
             TURN_DEBOUNCE_S if not self._legacy_engine else 0.9,
         )
         log.info("caller: %s", text)
+        self._last_caller_turn_at = time.time()
         async with self._turn_lock:
             msg_start = len(self.messages)
             if turn is not None:
@@ -3763,6 +3777,15 @@ class CallSession:
             self.messages.append({"role": "assistant", "content": cont})
             log.info("bot: %s  (continuing after the noise line)", cont)
             self._speak_task = asyncio.create_task(self._speak(cont, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
+        again = None if self._legacy_engine else self._say_again_reply(text)
+        if again:
+            self.messages.append({"role": "assistant", "content": again})
+            log.info("bot: %s  (saying the last line again: %r)", again, text)
+            self._speak_task = asyncio.create_task(self._speak(again, turn=turn))
             self._speak_task.add_done_callback(_log_task_error)
             if turn is not None:
                 turn["speak_task"] = self._speak_task
@@ -4250,7 +4273,45 @@ class CallSession:
         if not real:
             return None
         self._noise_turns = 0
-        return real[-1]
+        line = real[-1]
+        # Only the greeting has been said: "చెప్పండి" means GO ON, so saying
+        # the four-sentence welcome again is the one thing it cannot mean. A
+        # real campaign call (2026-10-20) heard the whole pitch twice. Let
+        # the model carry on instead; the script forbids re-greeting.
+        if len(real) == 1 and self._greeting_text and line.strip() == self._greeting_text.strip():
+            return None
+        # Any other long line is repeated by its last sentence -- the
+        # question -- rather than read out in full a second time.
+        if len(line) > 160:
+            parts = [p for p in re.split(r"(?<=[.!?।])\s+", line.strip()) if p.strip()]
+            if parts:
+                return parts[-1]
+        return line
+
+    def _say_again_reply(self, text: str) -> str | None:
+        """A bare "ఏమిటి? / ఏంటి? / ఏంటండి?" is "I didn't catch that", not a
+        new topic: say the last real line again (its question if it was
+        long). A real campaign call (2026-10-20) answered it with "ఏ రోజు
+        వీలవుతుందండి?" -- a visit day the caller had never discussed -- and
+        they came back with "ఏనికి?" (what for?).
+        """
+        if not (self.client or {}).get("relevance_rx"):
+            return None
+        t = (text or "").strip()
+        if not re.fullmatch(r"\W*(ఏమిటి|ఏంటి|ఏమిటండి|ఏంటండి|ఏమి|ఏంటండీ|ఏమిటండీ)\W*", t):
+            return None
+        noise_lines = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు",
+                       "నా మాట వినిపిస్తోందా")
+        said = [m["content"] or "" for m in self.messages[:-1] if m["role"] == "assistant"]
+        real = [s for s in said if not any(n in s for n in noise_lines)]
+        if not real:
+            return None
+        line = real[-1]
+        if len(line) > 160:
+            parts = [p for p in re.split(r"(?<=[.!?।])\s+", line.strip()) if p.strip()]
+            if parts:
+                line = parts[-1]
+        return line
 
     def _noise_turn_reply(self, text: str) -> str | None:
         """Clients with "relevance_rx": a turn with nothing to do with the
