@@ -3803,9 +3803,11 @@ class CallSession:
             return
         noise_line = None if self._legacy_engine else self._noise_turn_reply(text)
         if noise_line:
+            give_up = getattr(self, "_noise_give_up", False)
             self.messages.append({"role": "assistant", "content": noise_line})
-            log.info("bot: %s  (noise turn #%d: %r)", noise_line, self._noise_turns, text)
-            self._speak_task = asyncio.create_task(self._speak(noise_line, turn=turn))
+            log.info("bot: %s  (noise turn #%d: %r)%s", noise_line, self._noise_turns, text,
+                     "  [END_CALL]" if give_up else "")
+            self._speak_task = asyncio.create_task(self._speak(noise_line, end_call=give_up, turn=turn))
             self._speak_task.add_done_callback(_log_task_error)
             if turn is not None:
                 turn["speak_task"] = self._speak_task
@@ -4409,6 +4411,13 @@ class CallSession:
         if n == 2:
             return ("అక్కడ కొంచెం సౌండ్ ఎక్కువగా ఉందండి. కొంచెం నిశ్శబ్దంగా ఉన్న చోట నుంచి మాట్లాడతారా, "
                     "లేక తర్వాత కాల్ చేయమంటారా?")
+        if n >= 4:
+            # Nothing has come through in four turns running. A real campaign
+            # call (2026-10-20) went on like this for six minutes -- 31 of
+            # our 59 lines were "I couldn't hear you" -- against a caller who
+            # was swearing at us. Close politely and let the line go.
+            self._noise_give_up = True
+            return "సారీ అండి, లైన్ సరిగ్గా వినపడట్లేదు. తర్వాత మళ్ళీ కాల్ చేస్తామండి. ధన్యవాదాలు, నమస్కారం!"
         # Past two, keep it to one short line so noise can't run the call.
         return "సారీ అండి, వినపడలేదు. ఇంకోసారి చెప్తారా?"
 
@@ -5255,6 +5264,14 @@ class CallSession:
                         # caller said bye / thanks / not interested.
                         log.info("dropped a goodbye sentence -- the caller didn't say goodbye: %r", say)
                         dropped_goodbye = True
+                        continue
+                    if (say and not self._legacy_engine and len(say) > 40
+                            and self._is_greeting_material(say)
+                            and any(m["role"] == "user" for m in self.messages)):
+                        # The welcome, a second time, mid-call. The script
+                        # forbids it and a real campaign call (2026-10-20)
+                        # said the whole thing again anyway.
+                        log.info("dropped the welcome being said again: %r", say[:60])
                         continue
                     if say and say.endswith("?") and self._known_reask(say):
                         log.info("dropped a question whose answer is already known: %r", say)
