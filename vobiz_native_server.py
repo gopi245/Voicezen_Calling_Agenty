@@ -957,7 +957,7 @@ async def _warm_voicezen_greeting():
 @app.on_event("startup")
 async def _on_startup():
     asyncio.create_task(_warm_voicezen_greeting())
-    campaign_rules.start_queue(_queue_place_call, _queue_report_failed)
+    campaign_rules.start_queue(_queue_place_call, _queue_report_failed, check_customer_minutes)
 
 
 async def _report_unanswered_campaign_call(campaign: dict, cause: str | None,
@@ -2377,13 +2377,60 @@ def _gemini_reply(messages: list[dict], model: str, attempts: int,
     raise RuntimeError(f"{model} failed -- {last}")
 
 
+# Minutes balance, strict (owner's ask, 2026-10-20): when an account's
+# balance reaches 0, no new call is served and calls in progress are cut.
+# check-minutes reports minutes already logged; calls still in progress are
+# not logged yet, so the server adds them itself from _LIVE_CALLS, billed the
+# way log-call bills them (each call rounded UP to the next minute).
+_LIVE_CALLS: dict[int, dict[int, float]] = {}   # customer_id -> {session id: call start}
+# A call in progress is cut this many seconds before its next billed minute
+# would go past the balance, leaving room for the goodbye line.
+MINUTES_CUT_MARGIN_S = 8
+OUT_OF_MINUTES_CLOSING = {
+    "te": "క్షమించండి అండి, ఈ కాల్ ఇక్కడితో ముగుస్తుంది. ధన్యవాదాలు, నమస్కారం!",
+    "hi": "माफ़ कीजिए, यह कॉल यहीं समाप्त हो रही है। धन्यवाद।",
+    "en": "Sorry, this call has to end here. Thank you.",
+}
+
+
+def _live_minutes(customer_id: int, margin_s: float = 0) -> int:
+    now = time.time()
+    return sum(max(1, -(-int(now - started + margin_s) // 60))
+               for started in _LIVE_CALLS.get(customer_id, {}).values())
+
+
+async def _minutes_balance(customer_id: int) -> tuple[int, int] | None:
+    """(minutes logged this cycle, minutes in the plan + top-ups), or None
+    when that can't be known -- every failure fails open."""
+    data = await _check_minutes_data(customer_id)
+    if not data:
+        return None
+    used, total = data.get("minutesUsed"), data.get("totalMinutes")
+    if used is None or total is None:
+        return None
+    return int(used), int(total)
+
+
 async def check_customer_minutes(customer_id: int) -> bool:
-    """True if this customer still has minutes to spend (plan + topup, plus
-    a 10-minute grace buffer past that). Fails open on any error -- a real
-    customer's call should never get blocked by a network hiccup, only by
-    genuinely having no minutes left."""
-    if not CHECK_MINUTES_URL or not VOICE_AGENT_SECRET:
+    """True if this customer still has a minute to spend, counting the calls
+    they have in progress right now. No grace past the balance (owner's ask,
+    2026-10-20). Fails open on any error -- a real customer's call should
+    never get blocked by a network hiccup, only by genuinely having no
+    minutes left."""
+    data = await _check_minutes_data(customer_id)
+    if data is None:
         return True
+    used, total = data.get("minutesUsed"), data.get("totalMinutes")
+    if used is None or total is None:
+        return bool(data.get("allowed", True))  # e.g. no active plan at all
+    return int(used) + _live_minutes(customer_id) < int(total)
+
+
+async def _check_minutes_data(customer_id: int) -> dict | None:
+    """check-minutes' reply ({allowed, minutesUsed, totalMinutes, reason}),
+    or None on any failure."""
+    if not CHECK_MINUTES_URL or not VOICE_AGENT_SECRET:
+        return None
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
@@ -2399,12 +2446,11 @@ async def check_customer_minutes(customer_id: int) -> bool:
             ) as r:
                 if r.status != 200:
                     log.error("check-minutes failed: HTTP %s %s", r.status, await r.text())
-                    return True
-                data = await r.json()
-                return bool(data.get("allowed", True))
+                    return None
+                return await r.json()
     except Exception:
         log.exception("check-minutes request failed -- allowing the call")
-        return True
+        return None
 
 
 # ADMIN -- which script a call should speak, as set from the admin dashboard.
@@ -2696,6 +2742,10 @@ class CallSession:
         self._done = asyncio.Event()
         # Only set for a "Call Me Now" instant-lead call -- see start().
         self._time_limit_task: asyncio.Task | None = None
+        # Minutes balance (see _LIVE_CALLS): which account this call counts
+        # against, and the task that cuts the call when the balance runs out.
+        self._balance_customer: int | None = None
+        self._balance_task: asyncio.Task | None = None
         # ADMIN -- per-client AI settings from the admin dashboard. None means
         # the server-wide default, exactly as before those settings existed.
         self._llm_model: str | None = None
@@ -3018,6 +3068,7 @@ class CallSession:
         # ADMIN -- asked in parallel with the minutes check below, so it adds
         # no wait before the greeting. Campaign calls keep their own script.
         config_task = None
+        script_test_call = bool(self._campaign and self._campaign.get("script_test"))
         if prefetched is not None:
             allowed, early_config = prefetched
             config_task = asyncio.create_task(asyncio.sleep(0, result=early_config))
@@ -3036,10 +3087,20 @@ class CallSession:
                 "క్షమించండి అండి, ప్రస్తుతం ఈ సర్వీస్ అందుబాటులో లేదు. "
                 "దయచేసి మమ్మల్ని నేరుగా సంప్రదించండి."
             )
+            if self._campaign:
+                # A lead we called: no "service unavailable" -- the queue
+                # normally stops these before dialing; this is the race.
+                blocked_message = "క్షమించండి అండి, మేము తర్వాత మళ్ళీ కాల్ చేస్తాము. ధన్యవాదాలు."
             self.messages.append({"role": "assistant", "content": blocked_message})
             self._speak_task = asyncio.create_task(self._speak(blocked_message, end_call=True))
             self._speak_task.add_done_callback(_log_task_error)
             return
+        if customer_id and not script_test_call:
+            # Counted against the balance from now; cut if it runs out.
+            self._balance_customer = customer_id
+            _LIVE_CALLS.setdefault(customer_id, {})[id(self)] = self._started_at or time.time()
+            self._balance_task = asyncio.create_task(self._enforce_minutes_balance(customer_id))
+            self._balance_task.add_done_callback(_log_task_error)
 
         if config_task is not None:
             if self._legacy_engine:
@@ -5476,11 +5537,51 @@ class CallSession:
             self._debounce_task.cancel()
         if self._time_limit_task:
             self._time_limit_task.cancel()
+        if self._balance_task:
+            self._balance_task.cancel()
+        if self._balance_customer is not None:
+            _LIVE_CALLS.get(self._balance_customer, {}).pop(id(self), None)
         if self._amb_task:
             self._amb_task.cancel()
         await self.stt.close()
         await self.http.close()
         await self._report()
+
+    async def _enforce_minutes_balance(self, customer_id: int):
+        """Cut this call as soon as the account's minutes run out (owner's
+        ask, 2026-10-20): logged minutes (refreshed every minute) plus every
+        call this account has in progress, each billed rounded up. Unknown
+        balance (check-minutes down) never cuts a call."""
+        balance = None
+        fetched_at = 0.0
+        try:
+            while not self._done.is_set():
+                if time.time() - fetched_at >= 60:
+                    balance = await _minutes_balance(customer_id)
+                    fetched_at = time.time()
+                if balance is not None:
+                    used, total = balance
+                    if used + _live_minutes(customer_id, MINUTES_CUT_MARGIN_S) > total:
+                        break
+                await asyncio.sleep(3)
+            else:
+                return
+        except asyncio.CancelledError:
+            return
+        if self._done.is_set():
+            return
+        log.warning("customer %s is out of minutes (%s used of %s, %d min in calls now) -- ending this call",
+                    customer_id, balance[0], balance[1], _live_minutes(customer_id))
+        if self._speak_task and not self._speak_task.done():
+            self._speak_task.cancel()
+            try:
+                await self._speak_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        closing = OUT_OF_MINUTES_CLOSING.get(self._tts_language, OUT_OF_MINUTES_CLOSING["te"])
+        self.messages.append({"role": "assistant", "content": closing})
+        self._speak_task = asyncio.create_task(self._speak(closing, end_call=True))
+        self._speak_task.add_done_callback(_log_task_error)
 
     async def _enforce_instant_lead_time_limit(self):
         """"Call Me Now" (website instant-lead) calls only -- cuts the call

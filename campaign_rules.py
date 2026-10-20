@@ -235,9 +235,35 @@ async def _sleep(seconds: float) -> None:
         pass
 
 
+# An account whose minutes are used up is not dialed (owner's ask,
+# 2026-10-20): its contacts wait in the queue, and dialing resumes on its own
+# once the account recharges. Other accounts' contacts are not held up.
+BALANCE_RECHECK_S = 60
+_balance_cache: dict = {}   # customer_id -> (has balance, checked at)
+_waiting_logged: set = set()
+
+
+async def _has_balance(has_balance, customer_id) -> bool:
+    if has_balance is None or customer_id is None:
+        return True
+    ok, at = _balance_cache.get(customer_id, (None, 0.0))
+    if ok is None or time.time() - at >= (BALANCE_RECHECK_S if not ok else 15):
+        ok = bool(await has_balance(customer_id))
+        _balance_cache[customer_id] = (ok, time.time())
+        if not ok and customer_id not in _waiting_logged:
+            _waiting_logged.add(customer_id)
+            log.warning("call queue: customer %s is out of minutes -- their contacts wait for a recharge",
+                        customer_id)
+        elif ok and customer_id in _waiting_logged:
+            _waiting_logged.discard(customer_id)
+            log.info("call queue: customer %s has minutes again -- dialing resumes", customer_id)
+    return ok
+
+
 async def _run(place) -> None:
-    """place(body) -> (ok, request_uuid, detail); report_failed(body, detail)."""
-    place_call, report_failed = place
+    """place(body) -> (ok, request_uuid, detail); report_failed(body, detail);
+    has_balance(customer_id) -> bool, or None to dial without checking."""
+    place_call, report_failed, has_balance = place
     log.info("call queue started: %d waiting, %d at a time, calling hours %s", len(_load_queue()),
              MAX_CONCURRENT_CALLS, "10:00-18:55 IST" if CALLING_HOURS_ON else "off (any time)")
     while True:
@@ -256,13 +282,27 @@ async def _run(place) -> None:
             if len(_active) >= MAX_CONCURRENT_CALLS:
                 await _sleep(10)
                 continue
-            item = q[0]
+            item = None
+            for candidate in q:
+                customer = (candidate["body"].get("campaign") or {}).get("customer_id")
+                if await _has_balance(has_balance, customer):
+                    item = candidate
+                    break
+            if item is None:
+                await _sleep(BALANCE_RECHECK_S)
+                continue
+            # Re-checked right before dialing: the cached answer may be
+            # up to 15 s old and calls in progress use minutes meanwhile.
+            customer = (item["body"].get("campaign") or {}).get("customer_id")
+            _balance_cache.pop(customer, None)
+            if not await _has_balance(has_balance, customer):
+                continue
             try:
                 ok, request_uuid, detail = await place_call(item["body"])
             except Exception as e:
                 log.exception("call queue: dial failed")
                 ok, request_uuid, detail = False, None, str(e)
-            q.pop(0)
+            q.remove(item)
             _save_queue()
             if ok and request_uuid:
                 _active[request_uuid] = time.time()
@@ -276,8 +316,8 @@ async def _run(place) -> None:
             await asyncio.sleep(30)
 
 
-def start_queue(place_call, report_failed) -> None:
+def start_queue(place_call, report_failed, has_balance=None) -> None:
     global _wake, _runner_task
     if _runner_task is None:
         _wake = asyncio.Event()
-        _runner_task = asyncio.create_task(_run((place_call, report_failed)))
+        _runner_task = asyncio.create_task(_run((place_call, report_failed, has_balance)))
