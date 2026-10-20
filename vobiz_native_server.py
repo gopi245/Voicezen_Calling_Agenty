@@ -3819,6 +3819,15 @@ class CallSession:
             if turn is not None:
                 turn["speak_task"] = self._speak_task
             return
+        cant_visit = None if self._legacy_engine else self._cannot_visit_reply(text)
+        if cant_visit:
+            self.messages.append({"role": "assistant", "content": cant_visit})
+            log.info("bot: %s  (they cannot come to the site)", cant_visit)
+            self._speak_task = asyncio.create_task(self._speak(cant_visit, turn=turn))
+            self._speak_task.add_done_callback(_log_task_error)
+            if turn is not None:
+                turn["speak_task"] = self._speak_task
+            return
         smaller = None if self._legacy_engine else self._smaller_plot_reply(text)
         if smaller:
             self.messages.append({"role": "assistant", "content": smaller})
@@ -4458,6 +4467,26 @@ class CallSession:
                     "రూపాయల చొప్పున. ఎన్ని ప్లాట్లు కావాలో సైట్ విజిట్‌లో మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
         return ("సెంటుకి యాభై ఆరు వేల రూపాయలండి. మీరు అడిగిన సైజ్‌కి మొత్తం ఎంతవుతుందో సైట్ విజిట్‌లో "
                 "మా టీమ్ కన్ఫర్మ్ చేస్తారండి.")
+
+    def _cannot_visit_reply(self, text: str) -> str | None:
+        """They have said they cannot come to the site. Asking for a day
+        again is the one thing that cannot help: a scripted call
+        (2026-10-20) answered "సైట్‌కి రాలేను, ఫోన్‌లోనే చెప్పండి" by asking
+        for a visit day three more times. Offer what actually helps instead
+        -- the details on this number and a call from the team."""
+        if not (self.client or {}).get("relevance_rx"):
+            return None
+        t = (text or "").strip()
+        if not re.search(r"రాలేను|రాలేము|రాను\b|రాలేక|వచ్చే పరిస్థితి లేదు|"
+                         r"సైట్‌?కి (రాలే|రాను|కుదర)|"
+                         r"(విజిట్|సైట్)\s*(కి|కు)?\s*(కుదరదు|కుదరట్లేదు|కష్టం)", t):
+            return None
+        asked = sum(1 for m in self.messages if m["role"] == "assistant"
+                    and re.search(r"ఏ రోజు|విజిట్‌?కి రావ", m["content"] or ""))
+        if asked == 0:
+            return None  # they have not been pushed yet; let the model talk
+        return ("అర్థమైందండి, ఇబ్బంది లేదు. లొకేషన్, ఫొటోలు, వివరాలు ఈ నంబర్‌కి పంపిస్తామండి. "
+                "మా టీమ్ కాల్ చేసి మీకు అన్ని వివరాలు చెప్తారండి.")
 
     def _smaller_plot_reply(self, text: str) -> str | None:
         """They want LESS than the smallest plot ("నాకు ఆరు సెంట్లు
