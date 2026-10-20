@@ -45,6 +45,9 @@ CLIENTS: dict[str, dict] = {
         # The newer call engine, explicitly: engine selection used to ride on
         # client_id == "voicezen", which this entry no longer carries.
         "engine": "new",
+        # Gemini 3.5 Flash-Lite answers this line (owner's ask, 2026-10-20),
+        # as the model itself -- not as Groq's fallback.
+        "llm_model": "gemini-3.5-flash-lite",
         # INBOUND calls hear the Vedantha Vanam sandalwood-farmland script
         # (owner's request, 2026-10-18; replaced the Hindi real-estate demo,
         # script_realestate_hi, which stays in agent/ for rollback).

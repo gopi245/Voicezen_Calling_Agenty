@@ -3886,7 +3886,8 @@ class CallSession:
         except Exception:
             log.exception("streaming reply failed -- falling back to a whole reply")
         try:
-            reply = await asyncio.to_thread(llm_reply, self._messages_for_llm(), 3, self._llm_model)
+            reply = await asyncio.to_thread(llm_reply, self._messages_for_llm(), 3,
+                                            self._effective_llm_model())
         except Exception:
             log.exception("llm failed")
             return
@@ -4865,6 +4866,15 @@ class CallSession:
             f"The caller's latest message is in {lang}. Write this whole reply in {lang} only -- "
             f"use the {lang} version of any example line; an example that exists only in Telugu must be fully translated into {lang}, not copied. Not a single sentence in another language.")}]
 
+    def _effective_llm_model(self) -> str | None:
+        """Which model answers on this call: the dashboard's choice for the
+        customer first, then the number's own (clients_registry
+        "llm_model"). None means the service default (LLM_MODEL)."""
+        if self._llm_model in SELECTABLE_LLM_MODELS:
+            return self._llm_model
+        reg = (self.client or {}).get("llm_model")
+        return reg if reg in SELECTABLE_LLM_MODELS else None
+
     async def _stream_turn(self, transcript_at: float, speech_seen_at: float | None,
                            turn: dict | None = None):
         """Speaks the reply sentence by sentence, as the model writes it.
@@ -4878,7 +4888,8 @@ class CallSession:
         the caller before this turn's _speak_queue task can outlive the
         _turn_lock and race a later turn over shared instance state.
         """
-        model = self._llm_model if self._llm_model in SELECTABLE_LLM_MODELS else LLM_MODEL
+        chosen = self._effective_llm_model()
+        model = chosen or LLM_MODEL
         queue: asyncio.Queue = asyncio.Queue()
         spoken_any = False
         full = ""
@@ -4899,6 +4910,12 @@ class CallSession:
         if SELECTABLE_LLM_MODELS.get(model, {}).get("provider") == "groq":
             stream = functools.partial(llm_stream, groq_model=model)
             model = LLM_MODEL
+        elif (not self._legacy_engine and not self._llm_model and chosen
+              and chosen.startswith("gemini")):
+            # The NUMBER asks for a Gemini model (clients_registry
+            # "llm_model"): use it as the model, not as Groq's fallback.
+            # A dashboard-chosen model keeps the Groq-first behaviour.
+            stream, model = gemini_stream, chosen
         # VOICEZEN TEST -- VOICEZEN_LLM names a Gemini model to use for
         # VoiceZen instead of Groq, without touching LLM_MODEL (Gundusoodi's).
         if not self._legacy_engine and VOICEZEN_LLM.startswith("gemini"):
