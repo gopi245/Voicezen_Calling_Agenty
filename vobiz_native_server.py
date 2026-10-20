@@ -4290,6 +4290,9 @@ class CallSession:
             # "సారీ, వినపడలేదు" on a real test (2026-10-19).
             return False
         if re.search(r"వినిపిస్తు|వినపడుతు|వినిపిస్తోంది|మాట్లాడతాను|మాట్లాడండి|చెప్పండి|"
+                     # "ఏం చెప్తున్నారు అసలు?" is the caller losing patience
+                     # with us, not background noise (sim, 2026-10-20).
+                     r"చెప్తున్నార|చెబుతున్నార|అర్థం కావట్లేదు|అర్థం కాలేదు|"
                      # Answers to OUR own questions, and where the caller is
                      # calling from -- all treated as noise on real calls
                      # (2026-10-20): "ఆ వినిపిస్తుంది" looped three times
@@ -4327,11 +4330,12 @@ class CallSession:
             return None
         self._noise_turns = 0
         line = real[-1]
-        # Only the greeting has been said: "చెప్పండి" means GO ON, so saying
-        # the four-sentence welcome again is the one thing it cannot mean. A
-        # real campaign call (2026-10-20) heard the whole pitch twice. Let
-        # the model carry on instead; the script forbids re-greeting.
-        if len(real) == 1 and self._greeting_text and line.strip() == self._greeting_text.strip():
+        # "చెప్పండి" means GO ON, so the welcome -- or any piece of it we
+        # have already repeated -- is the one thing it cannot mean. A real
+        # campaign call (2026-10-20) heard the whole pitch twice, and a
+        # noisy one heard its last question three times. Let the model carry
+        # on instead; the script forbids re-greeting.
+        if self._is_greeting_material(line):
             return None
         # Any other long line is repeated by its last sentence -- the
         # question -- rather than read out in full a second time.
@@ -4340,6 +4344,18 @@ class CallSession:
             if parts:
                 return parts[-1]
         return line
+
+    def _is_greeting_material(self, line: str) -> bool:
+        """This line is the welcome or a piece of it. Repeating it is never
+        the answer: on a noisy call (sim, 2026-10-20) "ఇప్పుడు రెండు నిమిషాలు
+        మాట్లాడవచ్చా సార్?" came back three times and the caller never heard
+        what the project was."""
+        g = (self._greeting_text or "").strip()
+        s = (line or "").strip()
+        if not g or not s:
+            return False
+        norm = lambda x: re.sub(r"[\s‌‍]+", "", re.sub(r"[^\w\s]", "", x))  # noqa: E731
+        return norm(s) in norm(g)
 
     def _say_again_reply(self, text: str) -> str | None:
         """A bare "ఏమిటి? / ఏంటి? / ఏంటండి?" is "I didn't catch that", not a
@@ -4360,6 +4376,8 @@ class CallSession:
         if not real:
             return None
         line = real[-1]
+        if self._is_greeting_material(line):
+            return None  # carry on with the project, don't re-welcome them
         if len(line) > 160:
             parts = [p for p in re.split(r"(?<=[.!?।])\s+", line.strip()) if p.strip()]
             if parts:
