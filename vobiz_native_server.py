@@ -4003,6 +4003,29 @@ class CallSession:
                 return True
         return False
 
+    def _same_question_as_last(self, question: str) -> bool:
+        """This question is the one our previous reply already ended with.
+        "Never ask the same question twice in a row" is in every script and
+        still happened on five scripted calls (2026-10-20) -- the counting
+        guard allows a question twice, so back-to-back slipped through.
+        Wording varies ("మీకు ఏ రోజు..." vs "ఏ రోజు..."), so the comparison
+        drops punctuation and filler words before matching."""
+        if not (self.client or {}).get("repeat_guard"):
+            return False
+
+        def norm(q: str) -> str:
+            q = re.sub(r"[^\w\s]", "", _strip_markers(q or ""))
+            q = re.sub(r"\b(మీకు|మీరు|సార్|మేడం|అండి|మరి|ఇప్పుడు|సరేనండి|అయితే)\b", "", q)
+            return re.sub(r"[\s‌‍]+", "", q)
+
+        prev = next((m["content"] for m in reversed(self.messages[:-1])
+                     if m["role"] == "assistant"), "") or ""
+        last_q = re.split(r"(?<=[.!?।])\s+", _strip_markers(prev).strip())[-1]
+        if not last_q.endswith("?"):
+            return False
+        a, b = norm(question), norm(last_q)
+        return bool(a and b and (a == b or a in b or b in a))
+
     def _asked_too_often(self, question: str) -> bool:
         """This question was already asked twice in the call (clients with
         repeat_guard); the qualification may be asked up to four times."""
@@ -5181,6 +5204,13 @@ class CallSession:
                         # A real call (2026-10-12) tacked "మీ పేరు చెప్తారండి?"
                         # onto four answers in a row.
                         log.info("dropped a question already asked twice: %r", say)
+                        continue
+                    if (say and say.endswith("?") and said
+                            and self._same_question_as_last(say)):
+                        # The same question two replies running. Only dropped
+                        # when something else has already been said in this
+                        # reply -- asking again beats answering with nothing.
+                        log.info("dropped a question repeated from the last reply: %r", say)
                         continue
                     if say and self._offer_limit_reached() and _CONNECT_OFFER_RX.search(say):
                         log.info("dropped a third offer to connect: %r", say)
