@@ -42,6 +42,12 @@ CLIENTS: dict[str, dict] = {
         # Dashboard campaigns on this line's own script (campaign_rules.py):
         # a bare "hello" right after the greeting gets this short re-intro.
         "outbound_hello_line": "నమస్కారం సార్, వేదాంత వనం ప్రాజెక్ట్ నుంచి మాట్లాడుతున్నాను. రెండు నిమిషాలు మాట్లాడవచ్చా సార్?",
+        # Someone ringing US -- a campaign contact calling back, or anyone
+        # who saw the number. The script's own greeting says "I called you",
+        # which is backwards for them, and 80 calls have come in on this
+        # number (2026-10-20).
+        "inbound_greeting": ("నమస్కారం అండి, వేదాంత వనం శ్రీగంధం ఫామ్‌ల్యాండ్ ప్రాజెక్ట్‌కి స్వాగతం. "
+                             "ఏం తెలుసుకోవాలనుకుంటున్నారు అండి?"),
         # The newer call engine, explicitly: engine selection used to ride on
         # client_id == "voicezen", which this entry no longer carries.
         "engine": "new",

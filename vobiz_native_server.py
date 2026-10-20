@@ -3135,6 +3135,13 @@ class CallSession:
             if config["ai"]:
                 self._apply_ai_settings(config["ai"])
 
+        if (self._direction != "outbound" and not self._campaign
+                and (self.client or {}).get("inbound_greeting")):
+            # The script's own welcome is written for the calls we place
+            # ("I called you about our project"), which is backwards for
+            # someone ringing in -- including a campaign contact calling
+            # back (2026-10-20).
+            greeting = self.client["inbound_greeting"]
         if self._rules_campaign and instructions:
             instructions = instructions + campaign_rules.OUTBOUND_NOTE
 
