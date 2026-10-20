@@ -3710,6 +3710,11 @@ class CallSession:
                 self._opted_out = "wrong_number"
                 campaign_rules.add_dnc(_to_e164(self._to_number), "wrong number / never enquired")
                 rule_line, rule_why = campaign_rules.WRONG_NUMBER_LINE, "wrong number"
+            elif campaign_rules.NOT_AVAILABLE_RX.search(text or ""):
+                # Someone else answered: the person we rang is not there, so
+                # there is nothing to pitch to whoever is holding the phone.
+                self._caller_busy = True
+                rule_line, rule_why = campaign_rules.NOT_AVAILABLE_LINE, "person not available"
             elif campaign_rules.wants_later(text) and not self._visit_day_known():
                 self._caller_busy = True
                 rule_line, rule_why = campaign_rules.BUSY_LINE, "busy, call back later"

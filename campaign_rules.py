@@ -88,6 +88,18 @@ WRONG_NUMBER_RX = re.compile(r"రాంగ్ నంబర్|రాంగ్ �
 _BUSY_RX = re.compile(
     r"బిజీ|busy|ఇప్పుడు (కాదు|మాట్లాడలేను|వీలు కాదు|కుదరదు|టైం లేదు)|డ్రైవింగ్|బండి నడుపుతున్నా|మీటింగ్|"
     r"(తర్వాత|తరువాత|సాయంత్రం|రేపు)\s*(కాల్|ఫోన్|చేయండి|చెయ్యండి|మాట్లాడ)", re.I)
+# Someone else picked up: the person we rang is out, asleep, at work, or
+# the phone belongs to a relative. A scripted call (2026-10-20) answered
+# "ఆయన ఇంట్లో లేరు అండి" and "నేను ఆయన భార్యను" with "there's a lot of
+# noise there" -- both are perfectly clear, and neither is the person we
+# called.
+NOT_AVAILABLE_RX = re.compile(
+    r"(ఆయన|ఆవిడ|అతను|ఆమె|తను|వాళ్ళు)\s*(ఇంట్లో\s*)?(లేరు|లేడు|లేదు|లేరండి)|"
+    r"ఇంట్లో లేరు|బయటికి వెళ్ళారు|ఊర్లో లేరు|నిద్రపోతున్నారు|పనిలో ఉన్నారు|"
+    r"(ఆయన|ఆవిడ|అతని|ఆమె)\s*(భార్య|భర్త|కొడుకు|కూతురు|తమ్ముడు|అన్నయ్య)|"
+    r"నేను\s*(ఆయన|ఆవిడ|అతని|ఆమె)\s*(భార్యను|భర్తను|కొడుకును|కూతురును)", re.I)
+NOT_AVAILABLE_LINE = ("సరేనండి, తర్వాత ఆయనకి కాల్ చేస్తామండి. ధన్యవాదాలు, నమస్కారం!")
+
 NUMBER_SOURCE_RX = re.compile(
     r"(నా|మా)\s*నంబర్\s*(మీకు\s*)?(ఎక్కడ|ఎలా|ఎవరు)|నంబర్ ఎవరు ఇచ్చారు|ఎక్కడి నుంచి నంబర్|"
     r"how did you get my number|where did you get my number",

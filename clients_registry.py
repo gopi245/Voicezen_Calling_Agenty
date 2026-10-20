@@ -177,6 +177,14 @@ CLIENTS: dict[str, dict] = {
             # Misheard "పెట్టుబడి" and plain wanting-words: "ఎటుబడి కోసం
             # కావాలండి" was taken as noise on a real test (2026-10-19).
             r"బడి|ఎటుబడి|కోసం|కావాల|కావాలి|దగ్గర|దగ్గరలో|పైడి|"
+            # Upkeep and the twelve years: "పన్నెండేళ్ళ వరకు మీరే
+            # చూసుకుంటారా?" -- the core promise of the project -- was taken
+            # as noise (sim, 2026-10-20).
+            r"సంవత్సర|ఏళ్ళ|ఏళ్ల|పన్నెండ|చూసుకుంటార|చూసుకుంట|పెంపకం|నిర్వహణ|కాపాడ|ఖర్చు|బాధ్యత|"
+            # Someone else holding the phone, and thinking-it-over.
+            r"లేరు|లేడు|ఇంట్లో|భార్య|భర్త|కొడుకు|కూతురు|ఆలోచించి|చూద్దాం|"
+            # Approvals, water, fencing -- things a land buyer always asks.
+            r"అప్రూవ|ఎల్ ?ఆర్ ?ఎస్|LRS|నీళ్|నీరు|బోరు|బోర్|ఫెన్సింగ్|కరెంట్|రోడ్|"
             # Question words: "దేనికి?" (what's the visit for?) was taken as
             # noise on a real call (2026-10-19).
             r"దేనికి|దీనికి|ఎందుకు|ఏంటి|ఏమిటి|ఏంటండి|ఎవర|ఏది|ఎలా|ఎప్పుడు|ఎక్కడికి|"
