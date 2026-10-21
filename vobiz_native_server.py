@@ -2578,6 +2578,11 @@ def _looks_like_name(ans: str) -> bool:
     everyday word -- "ఇది కూల్ అవుతుంది" was taken for a caller's name on a
     real call (2026-10-15) and the real name was never collected."""
     # "మా పేరు లక్ష్మి" too -- it was not taken as a name on an audit (2026-10-19).
+    # "ఉమ్ అమూల్య అని." -- a filler before the name and "అని" after it is
+    # how people actually answer; it was read as a three-word phrase and
+    # therefore not a name at all (a real call, 2026-10-21).
+    ans = re.sub(r"^\W*(ఉమ్|ఊ|హ్మ్|ఆ|హా|అ)\s+", "", ans.strip())
+    ans = re.sub(r"\s+(అని|అండి|అంటారు|అంట)\s*[.।]?$", "", ans)
     ans = re.sub(r"^(నా పేరు|మా పేరు|నా పేరేమో|పేరు|నేను|my name is|నా నేమ్|మై నేమ్ ఈజ్|మై నేమ్)\s*", "", ans.strip(), flags=re.I)
     # A name and then a question in one breath -- "గోపికృష్ణ అండి జాబ్ ఇవ్వరా?"
     # on a real SR call (2026-10-18): the name was missed and asked again.
@@ -2595,6 +2600,8 @@ def _looks_like_name(ans: str) -> bool:
         # and the real name question was blocked three times after it.
         return False
     ans = re.sub(r"\s*(అండి|గారు)?[.।]?$", "", ans)
+    if re.search(r"\d", ans):
+        return False  # "56 56" was a name, and would have been said back
     words = ans.split()
     if not 1 <= len(words) <= 2:
         return False
@@ -4030,6 +4037,14 @@ class CallSession:
                       or "कब आ सकते" in sentence or "कब आ सकती" in sentence)
         if not (asks_name or asks_start):
             return False
+        # The name they gave in THIS turn counts: a real call (2026-10-21)
+        # thanked "అమూల్య గారు" and asked for the name again in the same
+        # breath, because only earlier turns were looked at.
+        if asks_name:
+            last_user = next((m["content"] for m in reversed(self.messages)
+                              if m["role"] == "user"), "") or ""
+            if _looks_like_name(last_user.strip()):
+                return True
         for i, m in enumerate(self.messages[:-1]):
             if m["role"] != "assistant":
                 continue
@@ -4327,7 +4342,15 @@ class CallSession:
         if not rel or not t:
             return False
         msgs = self.messages[:-1] if in_history else self.messages
-        prev = next((m["content"] for m in reversed(msgs) if m["role"] == "assistant"), "") or ""
+        # Our own "I couldn't hear you" lines are skipped when looking for
+        # what we last asked: otherwise one of them erases the question, and
+        # the caller repeating their answer is noise too. A real call
+        # (2026-10-21) called "అమూల్య" noise twice, right after asking for
+        # their name.
+        _ours = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు",
+                 "నా మాట వినిపిస్తోందా", "లైన్ సరిగ్గా వినపడట్లేదు")
+        prev = next((m["content"] for m in reversed(msgs)
+                     if m["role"] == "assistant" and not any(x in (m["content"] or "") for x in _ours)), "") or ""
         if _is_filler(t) or re.fullmatch(r"\W*(ఉమ్|ఊ|హ్మ్|ఆ|హా)+\W*", t):
             # A filler is the caller listening, not noise -- "ఉమ్." got
             # "సారీ, వినపడలేదు" on a real test (2026-10-19).
