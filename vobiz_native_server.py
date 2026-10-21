@@ -26,6 +26,7 @@ from __future__ import annotations
 import array
 import asyncio
 import audioop
+import difflib
 import functools
 import base64
 import importlib
@@ -2573,6 +2574,36 @@ _NOT_A_NAME = re.compile(
     r"కోర్సు|ఫీజు|క్లాస్|తెలుసు|అలాగే|మంచిది|okay|cool|fine|yes|no\b", re.I)
 
 
+# Weekday names a caller might say, for rescuing a mangled one. The line's
+# whole purpose is booking a visit day, and a noisy call turns "శనివారం"
+# into "సెనివారం" or "శనివరం" (2026-10-21). Only a close match counts:
+# "సెనబాబ్" from a real call scores 0.33 against every day and is closest
+# to the WRONG one, so guessing there would book a visit on a day nobody
+# asked for.
+_WEEKDAYS_TE = ("ఆదివారం", "సోమవారం", "మంగళవారం", "బుధవారం", "గురువారం", "శుక్రవారం", "శనివారం")
+_DAY_MATCH_MIN = 0.72
+
+
+def _day_skeleton(text: str) -> str:
+    """The word without vowel signs, virama or anusvara -- what survives a
+    bad line."""
+    return "".join(c for c in text
+                   if not unicodedata.combining(c) and c not in "ం్")
+
+
+def _closest_weekday(text: str) -> str | None:
+    """The weekday these words most likely were, or None if nothing is
+    close enough to be sure."""
+    words = [w for w in re.split(r"[\s,.।?]+", (text or "").strip()) if len(w) >= 4]
+    best, score = None, 0.0
+    for w in words:
+        for day in _WEEKDAYS_TE:
+            r = difflib.SequenceMatcher(None, _day_skeleton(w), _day_skeleton(day)).ratio()
+            if r > score:
+                best, score = day, r
+    return best if score >= _DAY_MATCH_MIN else None
+
+
 def _looks_like_name(ans: str) -> bool:
     """A plausible name reply: short, after the usual prefixes, and not an
     everyday word -- "ఇది కూల్ అవుతుంది" was taken for a caller's name on a
@@ -2697,6 +2728,8 @@ class CallSession:
         self._greeting_text: str | None = None
         # Set on the caller's first audio frame: the line is open both ways.
         self._media_seen = asyncio.Event()
+        # Words that came through unclearly, for the note on the next reply.
+        self._unclear_text = None
         # When the caller's words last reached us, so the silence prompt
         # can tell real quiet from a turn we answered.
         self._last_caller_turn_at = 0.0
@@ -4484,6 +4517,15 @@ class CallSession:
         n = getattr(self, "_noise_turns", 0) + 1
         self._noise_turns = n
         if n == 1:
+            # FIRST unclear turn: let the model read it in context before
+            # anyone says "I could not hear you". Callers ring from
+            # traffic and the recogniser mangles real words -- "సెనబాబ్
+            # అండి" on a real call (2026-10-21) was "శనివారం అండి", the
+            # visit day we were asking for, and it was thrown away.
+            # Sustained noise still falls through to the lines below.
+            self._unclear_text = t
+            return None
+        if n == 2 and not self._last_real_question():
             return "సారీ అండి, సరిగ్గా వినపడలేదు. ఇంకోసారి చెప్తారా?"
         if n == 2:
             # Saying "I could not hear you" twice helps nobody on a street
@@ -4770,6 +4812,24 @@ class CallSession:
         # else: in testing the model skipped "ఫీజు ఎంత?" / "ఏ కంపెనీ?" to
         # ask its own next question.
         last = self._last_caller_words() or ""
+        unclear = getattr(self, "_unclear_text", None)
+        if unclear:
+            self._unclear_text = None
+            notes.append({"role": "system", "content": (
+                f"The caller's words came through unclearly as \"{unclear}\" -- they are on a noisy line "
+                "and the recogniser garbles words. If you can tell what they most likely mean IN CONTEXT "
+                "of what you just asked (a day, a yes or no, a name, a size, a price question), treat it "
+                "as that and answer normally -- do not say you misheard. A day especially: anything close "
+                "to a weekday IS that weekday. If it really has nothing to do with the call -- other "
+                "people talking, traffic, a stray fragment -- do NOT answer it: say your own last "
+                "question again in a few short words instead.")})
+            day = _closest_weekday(unclear)
+            if day and re.search(r"ఏ రోజు|విజిట్‌?కి రావ|ఎప్పుడు వస్తార",
+                                 next((m["content"] for m in reversed(self.messages[:-1])
+                                       if m["role"] == "assistant"), "") or ""):
+                notes.append({"role": "system", "content": (
+                    f"Those unclear words are closest to \"{day}\", and you had just asked which day. "
+                    f"Take it as {day}: confirm it in a few words and move to the next step.")})
         if ((self.client or {}).get("transfer_to") and self._interest_now()
                 and not self._transfer_consented()):
             # "నాకు ఇంట్రెస్ట్ ఉందండి" deserves the offer, not a bare
