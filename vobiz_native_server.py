@@ -4450,6 +4450,24 @@ class CallSession:
                 line = parts[-1]
         return line
 
+    def _last_real_question(self) -> str | None:
+        """The last question we asked that was not one of our own noise
+        lines or the welcome, as the question alone. On a noisy line this is
+        what to say again -- it keeps the call moving instead of describing
+        the noise back to the caller."""
+        ours = ("సరిగ్గా వినపడలేదు", "సౌండ్ ఎక్కువగా ఉందండి", "సారీ అండి, వినపడలేదు",
+                "నా మాట వినిపిస్తోందా", "లైన్ సరిగ్గా వినపడట్లేదు")
+        for m in reversed(self.messages):
+            if m["role"] != "assistant":
+                continue
+            line = _strip_markers(m["content"] or "").strip()
+            if not line or any(x in line for x in ours) or self._is_greeting_material(line):
+                continue
+            parts = [p for p in re.split(r"(?<=[.!?।])\s+", line) if p.strip()]
+            if parts and parts[-1].rstrip().endswith("?"):
+                return parts[-1].strip()
+        return None
+
     def _noise_turn_reply(self, text: str) -> str | None:
         """Clients with "relevance_rx": a turn with nothing to do with the
         call -- background people, traffic, garbled fragments -- gets "please
@@ -4468,8 +4486,16 @@ class CallSession:
         if n == 1:
             return "సారీ అండి, సరిగ్గా వినపడలేదు. ఇంకోసారి చెప్తారా?"
         if n == 2:
-            return ("అక్కడ కొంచెం సౌండ్ ఎక్కువగా ఉందండి. కొంచెం నిశ్శబ్దంగా ఉన్న చోట నుంచి మాట్లాడతారా, "
-                    "లేక తర్వాత కాల్ చేయమంటారా?")
+            # Saying "I could not hear you" twice helps nobody on a street
+            # or in traffic (owner, 2026-10-21). Ask our own last question
+            # again instead: short, answerable in one word, and far more
+            # likely to survive the noise than a free answer.
+            again = self._last_real_question()
+            if again:
+                return again
+        if n == 3:
+            return ("అక్కడ సౌండ్ ఎక్కువగా ఉందండి. కొంచెం నిశ్శబ్దంగా ఉన్న చోట నుంచి మాట్లాడతారా? "
+                    "లేదంటే వివరాలు ఈ నంబర్‌కి పంపిస్తాం, మా టీమ్ కాల్ చేసి మాట్లాడతారండి.")
         if n >= 4:
             # Nothing has come through in four turns running. A real campaign
             # call (2026-10-20) went on like this for six minutes -- 31 of

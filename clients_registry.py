@@ -252,6 +252,11 @@ CLIENTS: dict[str, dict] = {
         # first-byte deadline or retry; websocket sends now serialized).
         "background_noise": None,  # off 2026-10-19: the ambience clip contains real speech (owner's ask)
         "engine": "new",
+        # SWITCH: RNNoise on the caller's audio, as on Vedantha Vanam since
+        # 2026-10-19 -- students ring from workshops, roadsides and buses.
+        # Measured there at under 3 ms of CPU per 20 ms of audio. Set to
+        # None to turn it off.
+        "noise_cancellation": "rnnoise",
         "stt_language": "te-IN",
         "tts_language": "te",
         "reply_language": "Telugu",
